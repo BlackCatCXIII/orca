@@ -29,3 +29,28 @@ export function attachEphemeralVmRuntimeToWorkspace(args: {
     workspaceId: args.workspaceId
   })
 }
+
+export function attachRunningEphemeralVmRuntimeToWorkspace(args: {
+  userDataPath: string
+  runtimeId: string
+  workspaceId: string
+}): EphemeralVmRuntimeRecord {
+  const runtime = listEphemeralVmRuntimes(args.userDataPath).find(
+    (entry) => entry.id === args.runtimeId
+  )
+  if (!runtime) {
+    throw new Error(`Unknown ephemeral VM runtime: ${args.runtimeId}`)
+  }
+  if (runtime.status !== 'running') {
+    throw new Error(`Cannot adopt non-running ephemeral VM runtime: ${args.runtimeId}`)
+  }
+  if (runtime.workspaceId && runtime.workspaceId !== args.workspaceId) {
+    throw new Error(`Ephemeral VM runtime is already attached: ${args.runtimeId}`)
+  }
+  if (runtime.workspaceId === args.workspaceId) {
+    return runtime
+  }
+  return updateEphemeralVmRuntimeStatus(args.userDataPath, args.runtimeId, {
+    workspaceId: args.workspaceId
+  })
+}

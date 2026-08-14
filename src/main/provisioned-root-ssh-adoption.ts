@@ -30,7 +30,7 @@ import {
   getSshProviderAuthority,
   isCurrentSshProviderAuthority
 } from './ssh/ssh-provider-authority'
-import { attachEphemeralVmRuntimeToWorkspace } from './ephemeral-vm-runtime-attachment'
+import { attachRunningEphemeralVmRuntimeToWorkspace } from './ephemeral-vm-runtime-attachment'
 import { getWorktreeCreationLayout, mergeWorktree } from './ipc/worktree-logic'
 
 export type ProvisionedRootAdoptionStore = Pick<
@@ -136,7 +136,7 @@ export async function adoptProvisionedRootSshCheckout(args: {
     }
   }
   if (currentRuntime.workspaceId !== worktreeId) {
-    attachEphemeralVmRuntimeToWorkspace({
+    attachRunningEphemeralVmRuntimeToWorkspace({
       userDataPath: args.userDataPath,
       runtimeId: request.runtimeId,
       workspaceId: worktreeId
@@ -160,9 +160,7 @@ function requireUniqueRuntimeAttachment(
 ): void {
   const conflicting = listEphemeralVmRuntimes(userDataPath).find(
     (runtime) =>
-      runtime.id !== runtimeId &&
-      runtime.workspaceId === worktreeId &&
-      !['cleanup_pending', 'cleanup_failed', 'cleaned'].includes(runtime.status)
+      runtime.id !== runtimeId && runtime.workspaceId === worktreeId && runtime.status !== 'cleaned'
   )
   if (conflicting) {
     throw new Error('Provisioned-root workspace is already attached to another runtime.')
@@ -249,7 +247,7 @@ function requireOwnedProvisionedRootRuntime(
     runtime.sshTargetId !== connectionId ||
     runtime.recipe?.checkoutMode !== 'provisioned-root' ||
     getEphemeralVmRecipeResultCheckoutMode(runtime.recipeResult) !== 'provisioned-root' ||
-    ['cleanup_pending', 'cleanup_failed', 'cleaned'].includes(runtime.status)
+    runtime.status !== 'running'
   ) {
     throw new Error('The ephemeral VM runtime does not own this provisioned SSH checkout.')
   }
