@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "mode": "destroy",
+  "recipeId": "example-recipe",
+  "recipeResult": {
+    "schemaVersion": 1,
+    "pairingCode": "orca://example",
+    "projectRoot": "/workspace/example"
+  },
+  "unexpected": "must be rejected"
+}
