@@ -41,6 +41,8 @@ function nodeCommand(scriptPath: string): string {
   return `"${process.execPath}" "${scriptPath}"`
 }
 
+const TEST_HOST_FINGERPRINT = `SHA256:${'A'.repeat(43)}`
+
 describe('ephemeral VM runtime service', () => {
   const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')
 
@@ -316,7 +318,7 @@ describe('ephemeral VM runtime service', () => {
         '  connection: {',
         '    type: "ssh",',
         '    projectRoot: "/workspace/moved",',
-        '    target: { label: "VM", host: "host", port: 22, username: "orca" }',
+        `    target: { label: "VM", host: "host", port: 22, username: "orca", hostKey: { type: "sha256", fingerprint: ${JSON.stringify(TEST_HOST_FINGERPRINT)} } }`,
         '  }',
         '}))'
       ].join('\n')
@@ -345,7 +347,13 @@ describe('ephemeral VM runtime service', () => {
         connection: {
           type: 'ssh',
           projectRoot: '/workspace/original',
-          target: { label: 'VM', host: 'host', port: 22, username: 'orca' }
+          target: {
+            label: 'VM',
+            host: 'host',
+            port: 22,
+            username: 'orca',
+            hostKey: { type: 'sha256', fingerprint: TEST_HOST_FINGERPRINT }
+          }
         }
       }
     })

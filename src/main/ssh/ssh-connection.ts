@@ -1,6 +1,5 @@
 /* eslint-disable max-lines -- Why: SSH connection lifecycle, credential retries, reconnect policy, and transport fallback are intentionally co-located so state transitions stay auditable in one file. */
 import * as net from 'node:net'
-import { createHash } from 'node:crypto'
 import { Client as SshClient } from 'ssh2'
 import type { ChildProcess } from 'node:child_process'
 import type { ClientChannel, ConnectConfig, SFTPWrapper } from 'ssh2'
@@ -64,6 +63,7 @@ import {
   createLinkedSshFileTransferSignal,
   raceSftpFileTransferWithAbort
 } from './ssh-file-transfer-abort'
+import { formatOpenSshSha256Fingerprint, verifySshHostKey } from './ssh-host-key-verification'
 export type { SshConnectionCallbacks } from './ssh-connection-utils'
 
 type SshRemoteFileOptions = {
@@ -1179,14 +1179,13 @@ export class SshConnection {
       const client = new SshClient()
       let settled = false
 
-      // Why: the relay uses the negotiated server key to isolate shared-home
-      // install locks without comparing PIDs from an unrelated SSH host.
+      // Why: ssh2 auto-accepts otherwise; schema-v2 pins must verify before authentication.
       config.hostVerifier = (key: Buffer): boolean => {
-        if (!this.disposed && connectGeneration === this.connectGeneration) {
-          const digest = createHash('sha256').update(key).digest('base64').replace(/=+$/, '')
-          this.hostKeyFingerprint = `SHA256:${digest}`
+        const accepted = verifySshHostKey(this.target.hostKey, key)
+        if (accepted && !this.disposed && connectGeneration === this.connectGeneration) {
+          this.hostKeyFingerprint = formatOpenSshSha256Fingerprint(key)
         }
-        return true
+        return accepted
       }
 
       const cleanupStartupListeners = (): void => {

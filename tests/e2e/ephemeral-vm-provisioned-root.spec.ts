@@ -123,6 +123,10 @@ async function addRecipeRepo(page: Parameters<typeof waitForSessionReady>[0], re
 function seedRecipeRepo(repoPath: string, target: DockerSshRelayTarget): void {
   const createScript = path.join(repoPath, 'create.sh')
   const destroyScript = path.join(repoPath, 'destroy.sh')
+  const hostPublicKey = execDockerSshRelayTargetCommand(
+    target,
+    "awk '{print $1, $2}' /etc/ssh/ssh_host_ed25519_key.pub"
+  )
   writeFileSync(
     createScript,
     `#!/usr/bin/env bash
@@ -131,7 +135,7 @@ set -euo pipefail
 [ -n "\${ORCA_REPO_URL:-}" ]
 [ -n "\${ORCA_REPO_BRANCH:-}" ]
 docker exec ${shellQuote(target.containerName)} git -C ${shellQuote(DOCKER_SSH_RELAY_REMOTE_REPO_PATH)} checkout -B "$ORCA_REPO_BRANCH" >&2
-node -e 'console.log(JSON.stringify({schemaVersion:2,checkoutMode:"provisioned-root",connection:{type:"ssh",projectRoot:process.argv[1],target:{label:"Docker provisioned root",host:process.argv[2],port:Number(process.argv[3]),username:"root",identityFile:process.argv[4],identitiesOnly:true}}}))' ${shellQuote(DOCKER_SSH_RELAY_REMOTE_REPO_PATH)} ${shellQuote(target.host)} ${target.port} ${shellQuote(target.identityFile)}
+node -e 'console.log(JSON.stringify({schemaVersion:2,checkoutMode:"provisioned-root",connection:{type:"ssh",projectRoot:process.argv[1],target:{label:"Docker provisioned root",host:process.argv[2],port:Number(process.argv[3]),username:"root",identityFile:process.argv[4],identitiesOnly:true,hostKey:{type:"public-key",publicKey:process.argv[5]}}}}))' ${shellQuote(DOCKER_SSH_RELAY_REMOTE_REPO_PATH)} ${shellQuote(target.host)} ${target.port} ${shellQuote(target.identityFile)} ${shellQuote(hostPublicKey)}
 `
   )
   writeFileSync(

@@ -228,7 +228,13 @@ function seedRuntime(userDataPath: string, root: string): void {
       checkoutMode: 'provisioned-root',
       connection: {
         type: 'ssh',
-        target: { label: 'Sandbox', host: '127.0.0.1', port: 22, username: 'orca' },
+        target: {
+          label: 'Sandbox',
+          host: '127.0.0.1',
+          port: 22,
+          username: 'orca',
+          hostKey: { type: 'sha256', fingerprint: `SHA256:${'A'.repeat(43)}` }
+        },
         projectRoot: root
       }
     }

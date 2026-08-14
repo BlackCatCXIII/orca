@@ -42,7 +42,7 @@ export function redactEphemeralVmRecipeDiagnosticText(text: string): string {
   return stripCredentialsFromMessage(text)
     .replace(/orca:\/\/pair\?code=[A-Za-z0-9_-]+/g, 'orca://pair?code=[redacted]')
     .replace(
-      /("(?:pairingCode|deviceToken|publicKeyB64|token|secret|password|apiKey|accessToken|identityFile|identityAgent|proxyCommand)"\s*:\s*)"[^"]*"/gi,
+      /("(?:pairingCode|deviceToken|publicKeyB64|publicKey|fingerprint|token|secret|password|apiKey|accessToken|identityFile|identityAgent|proxyCommand)"\s*:\s*)"[^"]*"/gi,
       '$1"[redacted]"'
     )
 }
@@ -56,7 +56,7 @@ export function redactEphemeralVmRecipeResultForDiagnostics(
       ...result,
       connection: redactConnection(result.connection),
       ...(userData ? { userData } : {})
-    }
+    } as EphemeralVmRecipeResult
   }
   return {
     ...result,
@@ -65,9 +65,9 @@ export function redactEphemeralVmRecipeResultForDiagnostics(
   }
 }
 
-function redactConnection(connection: EphemeralVmRecipeConnection): EphemeralVmRecipeConnection {
+function redactConnection<T extends EphemeralVmRecipeConnection>(connection: T): T {
   if (connection.type === 'orca-server') {
-    return { ...connection, pairingCode: 'orca://pair?code=[redacted]' }
+    return { ...connection, pairingCode: 'orca://pair?code=[redacted]' } as T
   }
   return {
     ...connection,
@@ -75,9 +75,17 @@ function redactConnection(connection: EphemeralVmRecipeConnection): EphemeralVmR
       ...connection.target,
       ...(connection.target.identityFile ? { identityFile: '[redacted-path]' } : {}),
       ...(connection.target.identityAgent ? { identityAgent: '[redacted-path]' } : {}),
-      ...(connection.target.proxyCommand ? { proxyCommand: '[redacted]' } : {})
+      ...(connection.target.proxyCommand ? { proxyCommand: '[redacted]' } : {}),
+      ...(connection.target.hostKey
+        ? {
+            hostKey:
+              connection.target.hostKey.type === 'sha256'
+                ? { type: 'sha256' as const, fingerprint: '[redacted]' }
+                : { type: 'public-key' as const, publicKey: '[redacted]' }
+          }
+        : {})
     }
-  }
+  } as T
 }
 
 function isPublicInsecureWebSocketEndpoint(endpoint: string): boolean {

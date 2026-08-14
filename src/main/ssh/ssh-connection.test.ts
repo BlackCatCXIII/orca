@@ -13,6 +13,7 @@ let connectErrorCode = ''
 let destroyErrorMessage = ''
 let connectSequence: ('ready' | Error)[] = []
 let connectAttempts = 0
+let negotiatedHostKey: Buffer = Buffer.from('mock-ssh-host-key')
 let execBehavior: 'callback' | 'pending' = 'callback'
 let pendingExecCallback: ((err: Error | undefined, channel: unknown) => void) | null = null
 let sftpBehavior: 'callback' | 'pending' = 'callback'
@@ -88,8 +89,12 @@ vi.mock('ssh2', () => {
       this.lastConnectConfig = config
       const hostVerifier = (config as { hostVerifier?: (key: Buffer) => boolean } | undefined)
         ?.hostVerifier
-      hostVerifier?.(Buffer.from('mock-ssh-host-key'))
+      const hostAccepted = hostVerifier?.(negotiatedHostKey) ?? true
       setTimeout(() => {
+        if (!hostAccepted) {
+          emitSshEvent('error', new Error('Host denied (verification failed)'))
+          return
+        }
         const next = connectSequence.shift()
         if (next instanceof Error) {
           emitSshEvent('error', next)
@@ -201,6 +206,7 @@ import {
 import { getRemoteHostPlatform } from './ssh-remote-platform'
 import { CONNECT_TIMEOUT_MS, RECONNECT_BACKOFF_MS } from './ssh-connection-utils'
 import { MIN_SSH_RELAY_GRACE_PERIOD_SECONDS, type SshTarget } from '../../shared/ssh-types'
+import { formatOpenSshSha256Fingerprint } from './ssh-host-key-verification'
 import {
   createOpenSshPrivateKeyFixture,
   createOpenSshPublicKeyFixture
@@ -215,6 +221,22 @@ function createTarget(overrides?: Partial<SshTarget>): SshTarget {
     username: 'deploy',
     ...overrides
   }
+}
+
+function makeOpenSshHostKey(
+  algorithm: string,
+  payload = Buffer.alloc(32, 7)
+): {
+  raw: Buffer
+  publicKey: string
+} {
+  const encode = (value: Buffer): Buffer => {
+    const length = Buffer.alloc(4)
+    length.writeUInt32BE(value.length)
+    return Buffer.concat([length, value])
+  }
+  const raw = Buffer.concat([encode(Buffer.from(algorithm)), encode(payload)])
+  return { raw, publicKey: `${algorithm} ${raw.toString('base64')}` }
 }
 
 function createResolvedConfig(overrides?: Partial<SshResolvedConfig>): SshResolvedConfig {
@@ -321,6 +343,7 @@ describe('SshConnection', () => {
     destroyErrorMessage = ''
     connectSequence = []
     connectAttempts = 0
+    negotiatedHostKey = Buffer.from('mock-ssh-host-key')
     execBehavior = 'callback'
     pendingExecCallback = null
     sftpBehavior = 'callback'
@@ -378,6 +401,79 @@ describe('SshConnection', () => {
     await conn.connect()
 
     expect(conn.getHostKeyFingerprint()).toMatch(/^SHA256:[A-Za-z\d+/]{43}$/)
+  })
+
+  it('connects only when a provisioned target SHA256 pin matches the negotiated key', async () => {
+    const conn = new SshConnection(
+      createTarget({
+        hostKey: {
+          type: 'sha256',
+          fingerprint: formatOpenSshSha256Fingerprint(negotiatedHostKey)
+        }
+      }),
+      createCallbacks()
+    )
+
+    await conn.connect()
+
+    expect(conn.getState().status).toBe('connected')
+    expect(conn.getHostKeyFingerprint()).toBe(formatOpenSshSha256Fingerprint(negotiatedHostKey))
+  })
+
+  it('rejects a host-key mismatch before credentials, exec, or SFTP', async () => {
+    const onCredentialRequest = vi.fn()
+    const conn = new SshConnection(
+      createTarget({
+        hostKey: { type: 'sha256', fingerprint: `SHA256:${'A'.repeat(43)}` }
+      }),
+      createCallbacks({ onCredentialRequest })
+    )
+
+    await expect(conn.connect()).rejects.toThrow('Host denied (verification failed)')
+
+    expect(connectAttempts).toBe(1)
+    expect(onCredentialRequest).not.toHaveBeenCalled()
+    await expect(conn.exec('true')).rejects.toThrow('Not connected')
+    await expect(conn.sftp()).rejects.toThrow('Not connected')
+    expect(conn.getHostKeyFingerprint()).toBeUndefined()
+  })
+
+  it('binds exact public-key pins to the SSH key algorithm and bytes', async () => {
+    const pinned = makeOpenSshHostKey('ssh-ed25519')
+    const differentAlgorithm = makeOpenSshHostKey('ssh-ed25518')
+    negotiatedHostKey = differentAlgorithm.raw
+    const conn = new SshConnection(
+      createTarget({ hostKey: { type: 'public-key', publicKey: pinned.publicKey } }),
+      createCallbacks()
+    )
+
+    await expect(conn.connect()).rejects.toThrow('Host denied (verification failed)')
+
+    expect(connectAttempts).toBe(1)
+  })
+
+  it('accepts the exact negotiated OpenSSH public key', async () => {
+    const pinned = makeOpenSshHostKey('ssh-ed25519')
+    negotiatedHostKey = pinned.raw
+    const conn = new SshConnection(
+      createTarget({ hostKey: { type: 'public-key', publicKey: pinned.publicKey } }),
+      createCallbacks()
+    )
+
+    await conn.connect()
+
+    expect(conn.getState().status).toBe('connected')
+  })
+
+  it('fails closed when a persisted host pin is malformed', async () => {
+    const conn = new SshConnection(
+      createTarget({ hostKey: { type: 'public-key', publicKey: 'not-an-openssh-key' } }),
+      createCallbacks()
+    )
+
+    await expect(conn.connect()).rejects.toThrow('Host denied (verification failed)')
+
+    expect(connectAttempts).toBe(1)
   })
 
   it('ignores a late host fingerprint from an obsolete connect generation', async () => {

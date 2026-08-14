@@ -2,6 +2,11 @@ import { z } from 'zod'
 import { parsePairingCode } from './pairing'
 import { MAX_SSH_RELAY_GRACE_PERIOD_SECONDS, MIN_SSH_RELAY_GRACE_PERIOD_SECONDS } from './ssh-types'
 import { assertJsonTextStructureWithinLimits } from './json-text-structure-limit'
+import {
+  decodeOpenSshPublicKey,
+  decodeOpenSshSha256Fingerprint,
+  type SshHostKeyPin
+} from './ssh-host-key-pin'
 
 const JsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
   z.union([
@@ -36,6 +41,31 @@ const SavedPortForwardSchema = z
   })
   .strict()
 
+export const SshHostKeyPinSchema: z.ZodType<SshHostKeyPin> = z.discriminatedUnion('type', [
+  z
+    .object({
+      type: z.literal('sha256'),
+      fingerprint: z
+        .string()
+        .refine(
+          (value) => decodeOpenSshSha256Fingerprint(value) !== null,
+          'hostKey fingerprint must be an OpenSSH SHA256 fingerprint.'
+        )
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('public-key'),
+      publicKey: z
+        .string()
+        .refine(
+          (value) => decodeOpenSshPublicKey(value) !== null,
+          'hostKey publicKey must be an exact OpenSSH public key without a comment.'
+        )
+    })
+    .strict()
+])
+
 export const EphemeralVmRecipeSshTargetSchema = z
   .object({
     label: z.string().min(1),
@@ -43,6 +73,7 @@ export const EphemeralVmRecipeSshTargetSchema = z
     host: z.string().min(1),
     port: z.number().int().min(1).max(65535),
     username: z.string(),
+    hostKey: SshHostKeyPinSchema.optional(),
     identityFile: z.string().min(1).optional(),
     identityAgent: z.string().min(1).optional(),
     identitiesOnly: z.boolean().optional(),
@@ -63,6 +94,10 @@ export const EphemeralVmRecipeSshTargetSchema = z
   })
   .strict()
 
+const EphemeralVmRecipeProvisionedRootSshTargetSchema = EphemeralVmRecipeSshTargetSchema.extend({
+  hostKey: SshHostKeyPinSchema
+})
+
 const EphemeralVmRecipeOrcaServerConnectionSchema = z
   .object({
     type: z.literal('orca-server'),
@@ -78,6 +113,19 @@ const EphemeralVmRecipeSshConnectionSchema = z
     projectRoot: z.string().min(1)
   })
   .strict()
+
+const EphemeralVmRecipeProvisionedRootSshConnectionSchema = z
+  .object({
+    type: z.literal('ssh'),
+    target: EphemeralVmRecipeProvisionedRootSshTargetSchema,
+    projectRoot: z.string().min(1)
+  })
+  .strict()
+
+const EphemeralVmRecipeProvisionedRootConnectionSchema = z.discriminatedUnion('type', [
+  EphemeralVmRecipeOrcaServerConnectionSchema,
+  EphemeralVmRecipeProvisionedRootSshConnectionSchema
+])
 
 export const EphemeralVmRecipeConnectionSchema = z.discriminatedUnion('type', [
   EphemeralVmRecipeOrcaServerConnectionSchema,
@@ -117,7 +165,7 @@ export const EphemeralVmRecipeProvisionedRootConnectionResultSchema = z
   .object({
     schemaVersion: z.literal(2),
     checkoutMode: z.literal('provisioned-root'),
-    connection: EphemeralVmRecipeConnectionSchema,
+    connection: EphemeralVmRecipeProvisionedRootConnectionSchema,
     userData: z.record(z.string(), JsonValueSchema).optional()
   })
   .strict()
@@ -163,6 +211,12 @@ export function parseEphemeralVmRecipeResult(stdout: string): EphemeralVmRecipeR
   } catch {
     return { ok: false, error: 'Recipe stdout must be one JSON object.' }
   }
+  if (isProvisionedRootSshResultMissingHostKey(parsed)) {
+    return {
+      ok: false,
+      error: 'Provisioned-root SSH recipe results must include target.hostKey.'
+    }
+  }
   const result = EphemeralVmRecipeResultSchema.safeParse(parsed)
   if (!result.success) {
     return { ok: false, error: result.error.issues[0]?.message ?? 'Invalid recipe result.' }
@@ -175,6 +229,26 @@ export function parseEphemeralVmRecipeResult(stdout: string): EphemeralVmRecipeR
     return { ok: false, error: 'Recipe result projectRoot must be an absolute runtime path.' }
   }
   return { ok: true, result: result.data }
+}
+
+function isProvisionedRootSshResultMissingHostKey(value: unknown): boolean {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+  const result = value as Record<string, unknown>
+  if (result.schemaVersion !== 2 || result.checkoutMode !== 'provisioned-root') {
+    return false
+  }
+  const connection = result.connection
+  if (!connection || typeof connection !== 'object') {
+    return false
+  }
+  const sshConnection = connection as Record<string, unknown>
+  if (sshConnection.type !== 'ssh') {
+    return false
+  }
+  const target = sshConnection.target
+  return Boolean(target && typeof target === 'object' && !('hostKey' in target))
 }
 
 export function getEphemeralVmRecipeResultConnection(
