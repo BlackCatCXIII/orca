@@ -5,7 +5,6 @@ import {
   toEnvironmentRecipeDescriptor,
   toEnvironmentRecipeRuntime,
   type EnvironmentRecipeListResult,
-  type EnvironmentRecipeRuntimeListResult,
   type EnvironmentRecipeRuntime
 } from '../shared/environment-recipe-runtime-rpc'
 import { listEphemeralVmRuntimes } from '../shared/ephemeral-vm-runtime-store'
@@ -38,9 +37,13 @@ import {
   type EnvironmentRecipeScope
 } from './environment-recipe-scope'
 import type { OperatorEnvironmentRecipeCatalog } from './operator-environment-recipe-catalog'
-import { listEnvironmentRecipeRuntimes } from './environment-recipe-runtime-list'
+import {
+  resolveEnvironmentRecipeProvisionRef,
+  type EnvironmentRecipeProvisionRefResolver
+} from './environment-recipe-provision-ref'
 
 export { EnvironmentRecipeRpcError } from './environment-recipe-operation-control'
+export { listEnvironmentRecipeRuntimes as listEnvironmentRecipeRuntimesForRpc } from './environment-recipe-runtime-list'
 
 export type EnvironmentRecipeProvisionParams = EnvironmentRecipeScope & {
   clientMutationId: string
@@ -62,6 +65,7 @@ export type EnvironmentRecipeRuntimeRpcDependencies = {
   pairedDeviceId: string
   getPluginRecipes: () => Promise<readonly OrcaVmRecipe[]>
   operatorRecipeCatalog?: OperatorEnvironmentRecipeCatalog
+  resolveProvisionRef?: EnvironmentRecipeProvisionRefResolver
 }
 
 export async function listEnvironmentRecipesForRpc(
@@ -78,13 +82,6 @@ export async function listEnvironmentRecipesForRpc(
     repoId,
     recipes: recipes.map((recipe) => toEnvironmentRecipeDescriptor(repoId, recipe))
   }
-}
-
-export function listEnvironmentRecipeRuntimesForRpc(
-  deps: EnvironmentRecipeRuntimeRpcDependencies,
-  repoId: string
-): EnvironmentRecipeRuntimeListResult {
-  return listEnvironmentRecipeRuntimes(deps, repoId)
 }
 
 export function provisionEnvironmentRecipeForRpc(
@@ -142,6 +139,12 @@ export function provisionEnvironmentRecipeForRpc(
         return finalizeProvisionedEnvironmentRecipeRuntime(deps, repo, recipe, existing)
       }
 
+      const ref = await (deps.resolveProvisionRef ?? resolveEnvironmentRecipeProvisionRef)({
+        repoPath: repo.path,
+        requestedRef: params.ref,
+        operatorCatalogEnabled: Boolean(deps.operatorRecipeCatalog)
+      })
+
       const provisioned = await provisionEphemeralVmRuntime({
         userDataPath: deps.userDataPath,
         repoPath: repo.path,
@@ -156,7 +159,7 @@ export function provisionEnvironmentRecipeForRpc(
         workspaceId: params.workspaceId,
         workspaceName: params.workspaceName,
         branch: params.branch,
-        ref: params.ref,
+        ref,
         executionMode: deps.operatorRecipeCatalog ? 'direct' : 'shell',
         operatorRecipeCatalogSha256: deps.operatorRecipeCatalog?.status.digest
       })

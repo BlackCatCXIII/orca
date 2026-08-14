@@ -19,6 +19,7 @@ const MAX_SCRIPT_BYTES = 2 * 1024 * 1024
 const SHA256_PATTERN = /^[0-9a-f]{64}$/
 const RECIPE_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/
 const SCRIPT_PATH_PATTERN = /^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/
+const FATAL_UTF8_DECODER = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
 
 const ScriptSchema = z
   .object({
@@ -114,7 +115,9 @@ function readCatalog(
 
   let document: CatalogDocument
   try {
-    document = CatalogSchema.parse(parseOperatorCatalogJson(catalogBytes.toString('utf8')))
+    document = CatalogSchema.parse(
+      parseOperatorCatalogJson(FATAL_UTF8_DECODER.decode(catalogBytes))
+    )
   } catch {
     throw new OperatorRecipeCatalogError('Operator recipe catalog contract is invalid.')
   }

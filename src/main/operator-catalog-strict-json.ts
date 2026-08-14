@@ -21,16 +21,15 @@ class JsonObjectKeyScanner {
   }
 
   private scanValue(depth: number): void {
-    if (depth > MAX_JSON_DEPTH) {
-      throw new Error('JSON nesting limit exceeded.')
-    }
     this.skipWhitespace()
     const token = this.source[this.offset]
     if (token === '{') {
+      this.assertContainerDepth(depth)
       this.scanObject(depth + 1)
       return
     }
     if (token === '[') {
+      this.assertContainerDepth(depth)
       this.scanArray(depth + 1)
       return
     }
@@ -39,6 +38,12 @@ class JsonObjectKeyScanner {
       return
     }
     this.scanPrimitive()
+  }
+
+  private assertContainerDepth(depth: number): void {
+    if (depth >= MAX_JSON_DEPTH) {
+      throw new Error('JSON nesting limit exceeded.')
+    }
   }
 
   private scanObject(depth: number): void {

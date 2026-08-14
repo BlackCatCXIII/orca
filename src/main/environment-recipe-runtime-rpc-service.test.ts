@@ -367,7 +367,8 @@ describe('remote environment recipe runtime service', () => {
         {
           repoId: 'repo-1',
           recipeId: operatorRecipe.id,
-          clientMutationId: 'operator-connect-failure'
+          clientMutationId: 'operator-connect-failure',
+          ref: 'a'.repeat(40)
         }
       )
     ).rejects.toMatchObject({ code: 'environment_recipe_failed' })

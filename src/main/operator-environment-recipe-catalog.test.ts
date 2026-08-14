@@ -270,6 +270,20 @@ describe('operator environment recipe catalog', () => {
     ).toThrow(/contract is invalid/)
   })
 
+  it('rejects malformed UTF-8 before JSON parsing', () => {
+    const input = fixture()
+    const bytes = Buffer.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0x22, 0xc3, 0x28, 0x22, 0x7d])
+    writeFileSync(input.catalogPath, bytes, { mode: 0o644 })
+
+    expect(() =>
+      loadOperatorEnvironmentRecipeCatalog({
+        catalogPath: input.catalogPath,
+        sha256: sha256(bytes),
+        fileSystem: rootOwnedFileSystem()
+      })
+    ).toThrow(/contract is invalid/)
+  })
+
   it('rejects symlinked catalog, script, and ancestor paths', () => {
     const catalogLink = fixture()
     const linkedCatalog = join(catalogLink.root, 'catalog-link.json')

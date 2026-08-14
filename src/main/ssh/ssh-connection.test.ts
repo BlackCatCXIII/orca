@@ -437,6 +437,105 @@ describe('SshConnection', () => {
     expect(spawnSystemSshCommandMock).not.toHaveBeenCalled()
   })
 
+  it.each([
+    ['proxy', { proxyCommand: 'ssh -W %h:%p bastion.example.com' }],
+    ['jump', { jumpHost: 'bastion.example.com' }]
+  ])('fails closed when a pinned target requires the %s system route', async (_name, route) => {
+    const conn = new SshConnection(
+      createTarget({
+        ...route,
+        hostKey: {
+          type: 'sha256',
+          fingerprint: formatOpenSshSha256Fingerprint(negotiatedHostKey)
+        }
+      }),
+      createCallbacks()
+    )
+
+    await expect(conn.connect()).rejects.toThrow(/verified in-process SSH transport/)
+    expect(clientInstances).toHaveLength(0)
+    expect(spawnSystemSshCommandMock).not.toHaveBeenCalled()
+  })
+
+  it('fails closed when a pinned target requires a security-key system route', async () => {
+    findSystemSshMock.mockReturnValue('/usr/bin/ssh')
+    const directory = mkdtempSync(join(tmpdir(), 'orca-pinned-security-key-'))
+    const keyPath = join(directory, 'id_ed25519_sk')
+    writeFileSync(
+      keyPath,
+      createOpenSshPrivateKeyFixture(['sk-ssh-ed25519@openssh.com'], { encrypted: true })
+    )
+    const conn = new SshConnection(
+      createTarget({
+        identityFile: keyPath,
+        hostKey: {
+          type: 'sha256',
+          fingerprint: formatOpenSshSha256Fingerprint(negotiatedHostKey)
+        }
+      }),
+      createCallbacks()
+    )
+
+    try {
+      await expect(conn.connect()).rejects.toThrow(/verified in-process SSH transport/)
+      expect(clientInstances).toHaveLength(0)
+      expect(spawnSystemSshCommandMock).not.toHaveBeenCalled()
+    } finally {
+      rmSync(directory, { recursive: true })
+    }
+  })
+
+  it('keeps proactive GSSAPI on verified ssh2 for a pinned target', async () => {
+    vi.mocked(resolveWithSshG).mockResolvedValue(
+      createResolvedConfig({ proxyUseFdpass: false, gssapiAuthentication: true })
+    )
+    const conn = new SshConnection(
+      createTarget({
+        configHost: 'krb-host',
+        hostKey: {
+          type: 'sha256',
+          fingerprint: formatOpenSshSha256Fingerprint(negotiatedHostKey)
+        }
+      }),
+      createCallbacks()
+    )
+
+    await conn.connect()
+
+    expect(conn.usesSystemSshTransport()).toBe(false)
+    expect(conn.getHostKeyFingerprint()).toBe(formatOpenSshSha256Fingerprint(negotiatedHostKey))
+    expect(spawnSystemSshCommandMock).not.toHaveBeenCalled()
+  })
+
+  it('keeps reactive GSSAPI fallback on verified ssh2 for a pinned target', async () => {
+    vi.stubEnv('SSH_AUTH_SOCK', '')
+    connectSequence = [new Error('All configured authentication methods failed'), 'ready']
+    vi.mocked(resolveWithSshG).mockResolvedValue(
+      createResolvedConfig({
+        proxyUseFdpass: false,
+        gssapiAuthentication: true,
+        identityAgent: 'none'
+      })
+    )
+    const onCredentialRequest = vi.fn(async () => 'password-123')
+    const conn = new SshConnection(
+      createTarget({
+        configHost: 'krb-host',
+        hostKey: {
+          type: 'sha256',
+          fingerprint: formatOpenSshSha256Fingerprint(negotiatedHostKey)
+        }
+      }),
+      createCallbacks({ onCredentialRequest })
+    )
+
+    await conn.connect()
+
+    expect(conn.usesSystemSshTransport()).toBe(false)
+    expect(spawnSystemSshCommandMock).not.toHaveBeenCalled()
+    expect(onCredentialRequest).toHaveBeenCalled()
+  })
+
   it('rejects a host-key mismatch before credentials, exec, or SFTP', async () => {
     const onCredentialRequest = vi.fn()
     const conn = new SshConnection(
