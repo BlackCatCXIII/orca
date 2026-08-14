@@ -124,6 +124,7 @@ import type {
 import { FOLDER_WORKSPACE_INSTANCE_SEPARATOR } from '../../shared/worktree/id'
 import { RpcDispatcher } from './rpc/dispatcher'
 import type { RpcRequest } from './rpc/core'
+import { REPO_METHODS } from './rpc/methods/repo'
 import { TERMINAL_METHODS } from './rpc/methods/terminal'
 import { beginWatcherInstall } from '../ipc/watcher-removal-gate'
 import { WATCHER_REMOVAL_DRAIN_BUDGET_MS } from '../ipc/watcher-removal-drain'
@@ -7660,6 +7661,217 @@ describe('OrcaRuntimeService', () => {
     expect(prepareLocalWorktreeRootForRepoMock).toHaveBeenCalledWith(runtimeStore, repo)
   })
 
+  it('coalesces normalized concurrent RPC repo adds through one durable outcome', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'orca-runtime-add-coalesce-'))
+    const repoPath = join(tempRoot, 'caf\u00e9')
+    await mkdir(repoPath)
+    execFileSync('git', ['init'], { cwd: repoPath, stdio: 'ignore' })
+    const equivalentPath = repoPath.normalize('NFD')
+    const detection = deferred<null>()
+    const durableWrite = deferred<void>()
+    const repos: Record<string, unknown>[] = []
+    const addRepo = vi.fn((repo: Record<string, unknown>) => repos.push(repo))
+    const flushPendingOrThrowAsync = vi.fn(() => durableWrite.promise)
+    const runtimeStore = {
+      ...store,
+      getRepos: () => [...repos] as never,
+      addRepo,
+      getRepo: (id: string) => repos.find((repo) => repo.id === id) as never,
+      getProjects: () => projectHostSetupProjectionFromRepos(repos as never).projects as never,
+      getProjectHostSetups: () =>
+        projectHostSetupProjectionFromRepos(repos as never).setups as never,
+      flushPendingOrThrowAsync
+    }
+    const runtime = new OrcaRuntimeService(runtimeStore as never)
+    const dispatcher = new RpcDispatcher({ runtime, methods: REPO_METHODS })
+    let firstSettled = false
+    let secondSettled = false
+
+    try {
+      getRepoUpstreamMock.mockReturnValueOnce(detection.promise)
+      const first = dispatcher.dispatch({
+        ...makeRpcRequest('repo.add', { path: repoPath, kind: 'git' }),
+        id: 'repo-add-first'
+      })
+      void first.then(
+        () => {
+          firstSettled = true
+        },
+        () => {
+          firstSettled = true
+        }
+      )
+      await vi.waitFor(() => expect(getRepoUpstreamMock).toHaveBeenCalledOnce())
+
+      const second = dispatcher.dispatch({
+        ...makeRpcRequest('repo.add', { path: equivalentPath, kind: 'git' }),
+        id: 'repo-add-second'
+      })
+      const explicitLocal = runtime.addRepoDurably(equivalentPath, 'git', 'local')
+      void second.then(
+        () => {
+          secondSettled = true
+        },
+        () => {
+          secondSettled = true
+        }
+      )
+      const conflict = dispatcher.dispatch({
+        ...makeRpcRequest('repo.add', { path: equivalentPath, kind: 'folder' }),
+        id: 'repo-add-conflict'
+      })
+
+      await expect(conflict).resolves.toMatchObject({
+        ok: false,
+        error: {
+          code: 'runtime_error',
+          message: expect.stringContaining('already being added as git')
+        }
+      })
+      expect(addRepo).not.toHaveBeenCalled()
+      detection.resolve(null)
+      await vi.waitFor(() => expect(flushPendingOrThrowAsync).toHaveBeenCalledOnce())
+
+      expect(firstSettled).toBe(false)
+      expect(secondSettled).toBe(false)
+      expect(getRepoUpstreamMock).toHaveBeenCalledOnce()
+      expect(addRepo).toHaveBeenCalledOnce()
+      expect(prepareLocalWorktreeRootForRepoMock).toHaveBeenCalledOnce()
+      expect(runtime.listRepos()).toHaveLength(1)
+      expect(runtime.listProjects()).toEqual([
+        expect.objectContaining({ sourceRepoIds: [repos[0]?.id] })
+      ])
+      expect(runtime.listProjectHostSetups()).toEqual([
+        expect.objectContaining({ repoId: repos[0]?.id, path: repoPath })
+      ])
+      expect(flushPendingOrThrowAsync).toHaveBeenCalledWith()
+
+      durableWrite.resolve()
+      const [firstResponse, secondResponse, explicitLocalRepo] = await Promise.all([
+        first,
+        second,
+        explicitLocal
+      ])
+      expect(firstResponse).toMatchObject({ ok: true, result: { repo: { id: repos[0]?.id } } })
+      expect(secondResponse).toMatchObject({ ok: true, result: { repo: { id: repos[0]?.id } } })
+      expect(explicitLocalRepo.id).toBe(repos[0]?.id)
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('shares concurrent repo persistence failure and lets a later retry cross the barrier', async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), 'orca-runtime-add-failure-'))
+    execFileSync('git', ['init'], { cwd: repoPath, stdio: 'ignore' })
+    const detection = deferred<null>()
+    const retryWrite = deferred<void>()
+    const repos: Record<string, unknown>[] = []
+    const addRepo = vi.fn((repo: Record<string, unknown>) => repos.push(repo))
+    const persistenceError = new Error('disk unavailable')
+    const flushPendingOrThrowAsync = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(persistenceError)
+      .mockImplementationOnce(() => retryWrite.promise)
+    const runtimeStore = {
+      ...store,
+      getRepos: () => [...repos] as never,
+      addRepo,
+      getRepo: (id: string) => repos.find((repo) => repo.id === id) as never,
+      getProjects: () => projectHostSetupProjectionFromRepos(repos as never).projects as never,
+      getProjectHostSetups: () =>
+        projectHostSetupProjectionFromRepos(repos as never).setups as never,
+      flushPendingOrThrowAsync
+    }
+    const runtime = new OrcaRuntimeService(runtimeStore as never)
+    const dispatcher = new RpcDispatcher({ runtime, methods: REPO_METHODS })
+
+    try {
+      getRepoUpstreamMock.mockReturnValueOnce(detection.promise)
+      const first = dispatcher.dispatch({
+        ...makeRpcRequest('repo.add', { path: repoPath, kind: 'git' }),
+        id: 'repo-add-failure-first'
+      })
+      await vi.waitFor(() => expect(getRepoUpstreamMock).toHaveBeenCalledOnce())
+      const second = dispatcher.dispatch({
+        ...makeRpcRequest('repo.add', { path: `${repoPath}/`, kind: 'git' }),
+        id: 'repo-add-failure-second'
+      })
+
+      detection.resolve(null)
+      const [firstResponse, secondResponse] = await Promise.all([first, second])
+
+      expect(firstResponse).toMatchObject({
+        ok: false,
+        error: { code: 'runtime_error', message: persistenceError.message }
+      })
+      expect(secondResponse).toMatchObject({
+        ok: false,
+        error: { code: 'runtime_error', message: persistenceError.message }
+      })
+      expect(addRepo).toHaveBeenCalledOnce()
+      expect(prepareLocalWorktreeRootForRepoMock).toHaveBeenCalledOnce()
+      expect(flushPendingOrThrowAsync).toHaveBeenCalledOnce()
+      expect(runtime.listRepos()).toHaveLength(1)
+      expect(runtime.listProjects()).toHaveLength(1)
+      expect(runtime.listProjectHostSetups()).toHaveLength(1)
+
+      const existingId = repos[0]?.id
+      let retrySettled = false
+      const retry = dispatcher
+        .dispatch({
+          ...makeRpcRequest('repo.add', { path: repoPath, kind: 'git' }),
+          id: 'repo-add-failure-retry'
+        })
+        .finally(() => {
+          retrySettled = true
+        })
+      await vi.waitFor(() => expect(flushPendingOrThrowAsync).toHaveBeenCalledTimes(2))
+
+      expect(retrySettled).toBe(false)
+      expect(addRepo).toHaveBeenCalledOnce()
+      expect(prepareLocalWorktreeRootForRepoMock).toHaveBeenCalledOnce()
+      expect(getRepoUpstreamMock).toHaveBeenCalledOnce()
+      retryWrite.resolve()
+      await expect(retry).resolves.toMatchObject({
+        ok: true,
+        result: { repo: { id: existingId } }
+      })
+    } finally {
+      await rm(repoPath, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps concurrent durable repo adds isolated by target host', async () => {
+    const repos: Record<string, unknown>[] = []
+    const addRepo = vi.fn((repo: Record<string, unknown>) => repos.push(repo))
+    const flushPendingOrThrowAsync = vi.fn().mockResolvedValue(undefined)
+    const runtime = new OrcaRuntimeService({
+      ...store,
+      getRepos: () => [...repos] as never,
+      addRepo,
+      getRepo: (id: string) => repos.find((repo) => repo.id === id) as never,
+      flushPendingOrThrowAsync
+    } as never)
+
+    const [first, second] = await Promise.all([
+      runtime.addRepoDurably('/workspace', 'folder', 'runtime:env-1'),
+      runtime.addRepoDurably('/workspace', 'folder', 'runtime:env-2')
+    ])
+
+    expect(first.id).not.toBe(second.id)
+    expect(first).toMatchObject({ executionHostId: 'runtime:env-1' })
+    expect(second).toMatchObject({ executionHostId: 'runtime:env-2' })
+    expect(repos).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ executionHostId: 'runtime:env-1' }),
+        expect.objectContaining({ executionHostId: 'runtime:env-2' })
+      ])
+    )
+    expect(addRepo).toHaveBeenCalledTimes(2)
+    expect(prepareLocalWorktreeRootForRepoMock).toHaveBeenCalledTimes(2)
+    expect(flushPendingOrThrowAsync).toHaveBeenCalledTimes(2)
+  })
+
   it('sets up an existing folder on a fresh runtime after importing the repo project', async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), 'orca-runtime-project-setup-'))
     const repos: Record<string, unknown>[] = []
@@ -8025,6 +8237,67 @@ describe('OrcaRuntimeService', () => {
     // The legacy SSH repo must be untouched (no executionHostId stamped onto it).
     expect(repos[0]).toMatchObject({ id: 'repo-ssh-1', connectionId: 'ssh-target-1' })
     expect(repos[0]).not.toHaveProperty('executionHostId')
+  })
+
+  it('backfills the matching unstamped repo when another host has the same repo id', async () => {
+    const repos: Record<string, unknown>[] = [
+      {
+        id: 'shared-repo-id',
+        path: '/workspace',
+        displayName: 'SSH workspace',
+        badgeColor: 'blue',
+        addedAt: 1,
+        kind: 'folder',
+        connectionId: 'ssh-target-1'
+      },
+      {
+        id: 'shared-repo-id',
+        path: '/workspace',
+        displayName: 'Unstamped workspace',
+        badgeColor: 'green',
+        addedAt: 2,
+        kind: 'folder'
+      }
+    ]
+    const addRepo = vi.fn()
+    const updateRepo = vi.fn((id: string, updates: Record<string, unknown>, hostId?: string) => {
+      const index = repos.findIndex((repo) => {
+        const executionHostId =
+          typeof repo.executionHostId === 'string' ? repo.executionHostId : null
+        const connectionId = typeof repo.connectionId === 'string' ? repo.connectionId : null
+        const candidateHostId = executionHostId ?? (connectionId ? `ssh:${connectionId}` : 'local')
+        return repo.id === id && (!hostId || candidateHostId === hostId)
+      })
+      if (index === -1) {
+        return null
+      }
+      repos[index] = { ...repos[index], ...updates }
+      return repos[index] as never
+    })
+    const flushPendingOrThrowAsync = vi.fn().mockResolvedValue(undefined)
+    const runtime = new OrcaRuntimeService({
+      ...store,
+      getRepos: () => [...repos] as never,
+      getRepo: (id: string) => repos.find((repo) => repo.id === id) as never,
+      addRepo,
+      updateRepo,
+      flushPendingOrThrowAsync
+    } as never)
+
+    const adopted = await runtime.addRepoDurably('/workspace', 'folder', 'runtime:env-1')
+
+    expect(updateRepo).toHaveBeenCalledWith(
+      'shared-repo-id',
+      { executionHostId: 'runtime:env-1' },
+      'local'
+    )
+    expect(repos[0]).toMatchObject({ connectionId: 'ssh-target-1' })
+    expect(repos[0]).not.toHaveProperty('executionHostId')
+    expect(repos[1]).toMatchObject({ executionHostId: 'runtime:env-1' })
+    expect(adopted).toMatchObject({ displayName: 'Unstamped workspace' })
+    expect(addRepo).not.toHaveBeenCalled()
+    expect(prepareLocalWorktreeRootForRepoMock).not.toHaveBeenCalled()
+    expect(flushPendingOrThrowAsync).toHaveBeenCalledOnce()
   })
 
   it('only a runtime host adopts an unstamped repo; local/ssh imports never stamp it', async () => {

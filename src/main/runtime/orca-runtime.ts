@@ -2939,6 +2939,11 @@ export class OrcaRuntimeService {
   private worktreeScanInFlight = new Map<string, RuntimeWorktreeScanInFlight>()
   /** Repos whose Git-admin probe has not settled yet; caps abandoned fs work at one per repo. */
   private worktreeAdminFingerprintProbes = new Set<string>()
+  // Why: concurrent repo.add RPCs must share detection, mutation, preparation, and durable flush.
+  private durableRepoAddByScope = new Map<
+    string,
+    { kind: 'git' | 'folder'; promise: Promise<Repo> }
+  >()
   private cloneInFlightByPath = new Map<string, Promise<void>>()
   private agentDetector: AgentDetector | null = null
   private ptyForegroundAgentRefreshes = new Map<string, PtyForegroundAgentRefresh>()
@@ -19101,8 +19106,11 @@ export class OrcaRuntimeService {
         parseExecutionHostId(executionHostId)?.kind === 'runtime'
       ) {
         const adopted =
-          this.store.updateRepo(existing.id, { executionHostId }) ??
-          ({ ...existing, executionHostId } as Repo)
+          this.store.updateRepo(
+            existing.id,
+            { executionHostId },
+            getRepoExecutionHostId(existing)
+          ) ?? ({ ...existing, executionHostId } as Repo)
         this.invalidateResolvedWorktreeCache()
         this.invalidateWorktreeScanCacheForRepo(existing.id)
         this.notifyReposChanged()
@@ -19134,6 +19142,51 @@ export class OrcaRuntimeService {
     this.invalidateWorktreeScanCacheForRepo(repo.id)
     this.notifyReposChanged()
     return this.store.getRepo(repo.id) ?? repo
+  }
+
+  addRepoDurably(
+    path: string,
+    kind: 'git' | 'folder' = 'git',
+    executionHostId?: ExecutionHostId | null
+  ): Promise<Repo> {
+    const targetHostId = parseExecutionHostId(executionHostId)?.id ?? LOCAL_EXECUTION_HOST_ID
+    const scopeKey = `${normalizeRuntimePathForComparison(path)}\0${targetHostId}`
+    const existing = this.durableRepoAddByScope.get(scopeKey)
+    if (existing) {
+      if (existing.kind !== kind) {
+        return Promise.reject(
+          new Error(`Project path is already being added as ${existing.kind}: ${path}`)
+        )
+      }
+      return existing.promise
+    }
+
+    const promise = this.addRepoAndFlush(path, kind, executionHostId)
+    const entry = { kind, promise }
+    this.durableRepoAddByScope.set(scopeKey, entry)
+    const clear = (): void => {
+      if (this.durableRepoAddByScope.get(scopeKey) === entry) {
+        this.durableRepoAddByScope.delete(scopeKey)
+      }
+    }
+    void promise.then(clear, clear)
+    return promise
+  }
+
+  private async addRepoAndFlush(
+    path: string,
+    kind: 'git' | 'folder',
+    executionHostId?: ExecutionHostId | null
+  ): Promise<Repo> {
+    const repo = await this.addRepo(path, kind, executionHostId)
+    if (this.store?.flushPendingOrThrowAsync) {
+      await this.store.flushPendingOrThrowAsync()
+    } else if (this.store?.flushOrThrow) {
+      this.store.flushOrThrow()
+    } else {
+      throw new Error('repo_persistence_unavailable')
+    }
+    return repo
   }
 
   async createRepo(

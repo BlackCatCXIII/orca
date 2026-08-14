@@ -178,7 +178,7 @@ export const REPO_METHODS: RpcMethod[] = [
     name: 'repo.add',
     params: RepoPath,
     handler: async (params, { runtime }) => ({
-      repo: await runtime.addRepo(params.path, params.kind)
+      repo: await runtime.addRepoDurably(params.path, params.kind)
     })
   }),
   defineMethod({
