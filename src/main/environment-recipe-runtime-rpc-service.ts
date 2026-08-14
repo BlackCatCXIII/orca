@@ -21,7 +21,7 @@ import {
   EnvironmentRecipeRpcError,
   resetEnvironmentRecipeOperationControlForTests,
   runIdempotentEnvironmentRecipeMutation,
-  runSerializedEnvironmentRecipeRuntimeOperation
+  runSerializedEnvironmentRecipeRuntimeOperation as runRuntimeOperation
 } from './environment-recipe-operation-control'
 import {
   finalizeProvisionedEnvironmentRecipeRuntime,
@@ -76,6 +76,7 @@ export function provisionEnvironmentRecipeForRpc(
   params: EnvironmentRecipeProvisionParams
 ): Promise<EnvironmentRecipeRuntime> {
   return runIdempotentEnvironmentRecipeMutation(
+    deps.userDataPath,
     deps.pairedDeviceId,
     ENVIRONMENT_RECIPE_RPC_METHODS.provision,
     params,
@@ -83,6 +84,7 @@ export function provisionEnvironmentRecipeForRpc(
       const repo = requireEnvironmentRecipeRepo(deps.runtime, params.repoId)
       const recipe = await requireEnvironmentRecipe(repo, params.recipeId, deps.getPluginRecipes)
       const runtimeId = environmentRecipeMutationRuntimeId(
+        deps.userDataPath,
         deps.pairedDeviceId,
         params.clientMutationId
       )
@@ -129,11 +131,12 @@ export function suspendEnvironmentRecipeForRpc(
   params: EnvironmentRecipeLifecycleParams
 ): Promise<EnvironmentRecipeRuntime> {
   return runIdempotentEnvironmentRecipeMutation(
+    deps.userDataPath,
     deps.pairedDeviceId,
     ENVIRONMENT_RECIPE_RPC_METHODS.suspend,
     params,
     () =>
-      runSerializedEnvironmentRecipeRuntimeOperation(params.runtimeId, async () => {
+      runRuntimeOperation(deps.userDataPath, params.runtimeId, async () => {
         const { repo, recipe, runtime } = await resolveEnvironmentRecipeRuntimeScope(deps, params)
         if (runtime.status === 'suspended' || runtime.status === 'resume_failed') {
           return toEnvironmentRecipeRuntime(runtime, recipe)
@@ -164,11 +167,12 @@ export function resumeEnvironmentRecipeForRpc(
   params: EnvironmentRecipeLifecycleParams
 ): Promise<EnvironmentRecipeRuntime> {
   return runIdempotentEnvironmentRecipeMutation(
+    deps.userDataPath,
     deps.pairedDeviceId,
     ENVIRONMENT_RECIPE_RPC_METHODS.resume,
     params,
     () =>
-      runSerializedEnvironmentRecipeRuntimeOperation(params.runtimeId, async () => {
+      runRuntimeOperation(deps.userDataPath, params.runtimeId, async () => {
         const { repo, recipe, runtime } = await resolveEnvironmentRecipeRuntimeScope(deps, params)
         if (runtime.status === 'running' || runtime.status === 'suspend_failed') {
           return toEnvironmentRecipeRuntime(runtime, recipe)
@@ -198,11 +202,12 @@ export function destroyEnvironmentRecipeForRpc(
   params: EnvironmentRecipeLifecycleParams
 ): Promise<EnvironmentRecipeRuntime> {
   return runIdempotentEnvironmentRecipeMutation(
+    deps.userDataPath,
     deps.pairedDeviceId,
     ENVIRONMENT_RECIPE_RPC_METHODS.destroy,
     params,
     () =>
-      runSerializedEnvironmentRecipeRuntimeOperation(params.runtimeId, async () => {
+      runRuntimeOperation(deps.userDataPath, params.runtimeId, async () => {
         const { repo, recipe, runtime } = await resolveEnvironmentRecipeRuntimeScope(deps, params)
         if (runtime.status === 'cleaned' && !runtime.sshTargetId) {
           return toEnvironmentRecipeRuntime(runtime, recipe)

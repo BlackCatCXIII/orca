@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { resolve } from 'node:path'
 import type { EnvironmentRecipeRuntime } from '../shared/environment-recipe-runtime-rpc'
 
 const MAX_MUTATION_ENTRIES = 256
@@ -28,12 +29,13 @@ export class EnvironmentRecipeRpcError extends Error {
 }
 
 export function runIdempotentEnvironmentRecipeMutation<T extends { clientMutationId: string }>(
+  profilePath: string,
   pairedDeviceId: string,
   method: string,
   params: T,
   operation: () => Promise<EnvironmentRecipeRuntime>
 ): Promise<EnvironmentRecipeRuntime> {
-  const key = `${pairedDeviceId}\0${method}\0${params.clientMutationId}`
+  const key = `${normalizeProfilePath(profilePath)}\0${pairedDeviceId}\0${method}\0${params.clientMutationId}`
   const fingerprint = JSON.stringify(params)
   const existing = mutationEntries.get(key)
   if (existing) {
@@ -81,32 +83,37 @@ export function runIdempotentEnvironmentRecipeMutation<T extends { clientMutatio
 }
 
 export async function runSerializedEnvironmentRecipeRuntimeOperation(
+  profilePath: string,
   runtimeId: string,
   operation: () => Promise<EnvironmentRecipeRuntime>
 ): Promise<EnvironmentRecipeRuntime> {
-  const previous = runtimeOperationTails.get(runtimeId) ?? Promise.resolve()
+  const key = `${normalizeProfilePath(profilePath)}\0${runtimeId}`
+  const previous = runtimeOperationTails.get(key) ?? Promise.resolve()
   let release!: () => void
   const tail = new Promise<void>((resolve) => {
     release = resolve
   })
   const queued = previous.then(() => tail)
-  runtimeOperationTails.set(runtimeId, queued)
+  runtimeOperationTails.set(key, queued)
   await previous
   try {
     return await operation()
   } finally {
     release()
-    if (runtimeOperationTails.get(runtimeId) === queued) {
-      runtimeOperationTails.delete(runtimeId)
+    if (runtimeOperationTails.get(key) === queued) {
+      runtimeOperationTails.delete(key)
     }
   }
 }
 
 export function environmentRecipeMutationRuntimeId(
+  profilePath: string,
   pairedDeviceId: string,
   clientMutationId: string
 ): string {
   const digest = createHash('sha256')
+    .update(normalizeProfilePath(profilePath))
+    .update('\0')
     .update(pairedDeviceId)
     .update('\0')
     .update(clientMutationId)
@@ -130,4 +137,9 @@ function evictSettledMutation(): void {
       return
     }
   }
+}
+
+function normalizeProfilePath(profilePath: string): string {
+  const normalized = resolve(profilePath)
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized
 }
