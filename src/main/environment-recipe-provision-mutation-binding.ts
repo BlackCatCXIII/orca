@@ -4,20 +4,29 @@ import {
   type EnvironmentRecipeMutationControl
 } from './environment-recipe-operation-control'
 
-export function requireEnvironmentRecipeProvisionMutationBinding(
-  runtime: EphemeralVmRuntimeRecord,
+export function requireEnvironmentRecipeProvisionReplayBinding(
+  runtime: EphemeralVmRuntimeRecord | undefined,
   mutation: Pick<EnvironmentRecipeMutationControl, 'requestSha256' | 'provisionRef'>
 ): void {
-  if (
-    runtime.provisionMutation &&
-    (runtime.provisionMutation.requestSha256 !== mutation.requestSha256 ||
-      (mutation.provisionRef && runtime.provisionMutation.resolvedRef !== mutation.provisionRef))
-  ) {
-    throw new EnvironmentRecipeRpcError(
-      'environment_recipe_conflict',
-      'This client mutation id was already used for a different recipe request.'
-    )
+  if (!runtime?.provisionMutation) {
+    if (runtime?.operatorRecipeCatalogSha256) {
+      throw mutationConflict()
+    }
+    return
   }
+  if (
+    runtime.provisionMutation.requestSha256 !== mutation.requestSha256 ||
+    (mutation.provisionRef && runtime.provisionMutation.resolvedRef !== mutation.provisionRef)
+  ) {
+    throw mutationConflict()
+  }
+}
+
+function mutationConflict(): EnvironmentRecipeRpcError {
+  return new EnvironmentRecipeRpcError(
+    'environment_recipe_conflict',
+    'This client mutation id was already used for a different recipe request.'
+  )
 }
 
 export function operatorEnvironmentRecipeProvisionMutationBinding(

@@ -43,7 +43,7 @@ import {
 } from './environment-recipe-provision-ref'
 import {
   operatorEnvironmentRecipeProvisionMutationBinding,
-  requireEnvironmentRecipeProvisionMutationBinding
+  requireEnvironmentRecipeProvisionReplayBinding
 } from './environment-recipe-provision-mutation-binding'
 import { failedOperation, invalidLifecycleState } from './environment-recipe-rpc-errors'
 
@@ -114,6 +114,7 @@ export function provisionEnvironmentRecipeForRpc(
           'Recipe-created runtime requires its operator catalog.'
         )
       }
+      requireEnvironmentRecipeProvisionReplayBinding(existing, mutation)
       const recipe = await requireEnvironmentRecipe(
         repo,
         params.recipeId,
@@ -121,7 +122,6 @@ export function provisionEnvironmentRecipeForRpc(
         deps.operatorRecipeCatalog
       )
       if (existing) {
-        requireEnvironmentRecipeProvisionMutationBinding(existing, mutation)
         requireEnvironmentRecipeRuntimeScope(existing, params)
         if (
           deps.operatorRecipeCatalog &&
