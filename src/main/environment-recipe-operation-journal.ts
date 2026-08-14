@@ -5,6 +5,7 @@ import { readNodeFileSyncWithinLimit } from '../shared/node-bounded-file-reader'
 import { stringifyJsonWithinByteLimit } from '../shared/node-bounded-json-stringify'
 import { hardenExistingSecureFile, writeSecureFile } from '../shared/secure-file'
 import { listEphemeralVmRuntimes } from '../shared/ephemeral-vm-runtime-store'
+import { parseStrictUtf8Json } from '../shared/strict-json'
 
 const JOURNAL_FILE = 'orca-environment-recipe-mutations.json'
 const MAX_JOURNAL_FILE_BYTES = 512 * 1024
@@ -143,11 +144,24 @@ function readJournal(userDataPath: string): {
   }
   try {
     hardenExistingSecureFile(path)
-    return MutationJournalSchema.parse(
-      JSON.parse(readNodeFileSyncWithinLimit(path, MAX_JOURNAL_FILE_BYTES).buffer.toString('utf8'))
+    const journal = MutationJournalSchema.parse(
+      parseStrictUtf8Json(readNodeFileSyncWithinLimit(path, MAX_JOURNAL_FILE_BYTES).buffer)
     )
+    assertUniqueMutationIdentities(journal.entries)
+    return journal
   } catch {
     throw new EnvironmentRecipeOperationJournalError('invalid')
+  }
+}
+
+function assertUniqueMutationIdentities(entries: DurableEnvironmentRecipeMutation[]): void {
+  const identities = new Set<string>()
+  for (const entry of entries) {
+    const identity = JSON.stringify([entry.pairedDeviceId, entry.method, entry.clientMutationId])
+    if (identities.has(identity)) {
+      throw new Error('Duplicate environment recipe mutation identity.')
+    }
+    identities.add(identity)
   }
 }
 

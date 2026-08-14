@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, truncateSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, truncateSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -44,6 +44,17 @@ function runtimeRecord(
     },
     ...overrides
   }
+}
+
+function corruptPersistedJsonField(path: string, value: string): void {
+  const bytes = readFileSync(path)
+  const offset = bytes.indexOf(value)
+  if (offset === -1) {
+    throw new Error(`Persisted field not found: ${value}`)
+  }
+  bytes[offset] = 0xc3
+  bytes[offset + 1] = 0x28
+  writeFileSync(path, bytes)
 }
 
 describe('ephemeral VM runtime store', () => {
@@ -171,6 +182,54 @@ describe('ephemeral VM runtime store', () => {
   it('throws a store error for invalid persisted JSON', () => {
     const userDataPath = makeUserDataPath()
     writeFileSync(getEphemeralVmRuntimeStorePath(userDataPath), '{ nope', 'utf8')
+
+    expect(() => listEphemeralVmRuntimes(userDataPath)).toThrow(EphemeralVmRuntimeStoreError)
+  })
+
+  it('rejects malformed UTF-8 in a persisted provision binding', () => {
+    const userDataPath = makeUserDataPath()
+    const resolvedRef = 'a'.repeat(40)
+    upsertEphemeralVmRuntime(
+      userDataPath,
+      runtimeRecord({
+        provisionMutation: { requestSha256: 'f'.repeat(64), resolvedRef }
+      })
+    )
+    corruptPersistedJsonField(getEphemeralVmRuntimeStorePath(userDataPath), resolvedRef)
+
+    expect(() => listEphemeralVmRuntimes(userDataPath)).toThrow(EphemeralVmRuntimeStoreError)
+  })
+
+  it('rejects duplicate JSON keys in a persisted provision binding', () => {
+    const userDataPath = makeUserDataPath()
+    const resolvedRef = 'a'.repeat(40)
+    upsertEphemeralVmRuntime(
+      userDataPath,
+      runtimeRecord({
+        provisionMutation: { requestSha256: 'f'.repeat(64), resolvedRef }
+      })
+    )
+    const path = getEphemeralVmRuntimeStorePath(userDataPath)
+    const source = readFileSync(path, 'utf8').replace(
+      `"resolvedRef":"${resolvedRef}"`,
+      `"resolvedRef":"${resolvedRef}","resolvedRef":"${resolvedRef}"`
+    )
+    writeFileSync(path, source, 'utf8')
+
+    expect(() => listEphemeralVmRuntimes(userDataPath)).toThrow(EphemeralVmRuntimeStoreError)
+  })
+
+  it('rejects duplicate persisted runtime IDs', () => {
+    const userDataPath = makeUserDataPath()
+    const runtime = runtimeRecord()
+    writeFileSync(
+      getEphemeralVmRuntimeStorePath(userDataPath),
+      JSON.stringify({
+        version: 1,
+        runtimes: [runtime, { ...runtime, workspaceName: 'Conflicting duplicate' }]
+      }),
+      'utf8'
+    )
 
     expect(() => listEphemeralVmRuntimes(userDataPath)).toThrow(EphemeralVmRuntimeStoreError)
   })
