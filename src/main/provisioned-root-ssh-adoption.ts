@@ -25,6 +25,11 @@ import {
 import { attachEphemeralVmRuntimeToWorkspace } from './ephemeral-vm-runtime-attachment'
 import { getWorktreeCreationLayout, mergeWorktree } from './ipc/worktree-logic'
 
+export type ProvisionedRootAdoptionStore = Pick<
+  Store,
+  'setWorktreeMeta' | 'getProjectHostSetups' | 'getSettings'
+>
+
 type AdoptionArgs = AdoptProvisionedRootArgs & {
   automationProvenance?: AutomationWorkspaceProvenance
 }
@@ -33,7 +38,7 @@ export async function adoptProvisionedRootSshCheckout(args: {
   userDataPath: string
   request: AdoptionArgs
   repo: Repo
-  store: Store
+  store: ProvisionedRootAdoptionStore
   isRepoCurrent: () => boolean
 }): Promise<CreateWorktreeResult> {
   const { request, repo, store } = args
@@ -142,7 +147,7 @@ function pathsEqual(left: string, right: string): boolean {
 }
 
 function buildProvisionedRootMeta(
-  store: Store,
+  store: ProvisionedRootAdoptionStore,
   repo: Repo,
   args: AdoptionArgs,
   now: number

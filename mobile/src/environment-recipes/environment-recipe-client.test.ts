@@ -3,6 +3,7 @@ import { ENVIRONMENT_RECIPE_LIFECYCLE_RUNTIME_CAPABILITY } from '../../../src/sh
 import { markRpcDeliveryUnknown } from '../transport/rpc-delivery-ambiguity'
 import type { RpcResponse } from '../transport/types'
 import {
+  listMobileEnvironmentRecipeRuntimes,
   listMobileEnvironmentRecipes,
   provisionMobileEnvironmentRecipe,
   suspendMobileEnvironmentRecipe
@@ -82,6 +83,22 @@ describe('mobile environment recipe client', () => {
       listMobileEnvironmentRecipes({ sendRequest }, capabilities, 'repo-1')
     ).resolves.toMatchObject({ recipes: [{ recipeId: 'recipe-1' }] })
     expect(sendRequest).toHaveBeenCalledWith('environmentRecipes.list', { repoId: 'repo-1' })
+  })
+
+  it('discovers durable host runtime IDs without accepting provider fields', async () => {
+    const sendRequest = vi.fn().mockResolvedValue(
+      success({
+        repoId: 'repo-1',
+        runtimes: [runtimeResult()]
+      })
+    )
+
+    await expect(
+      listMobileEnvironmentRecipeRuntimes({ sendRequest }, capabilities, 'repo-1')
+    ).resolves.toMatchObject({ runtimes: [{ runtimeId: 'runtime-1' }] })
+    expect(sendRequest).toHaveBeenCalledWith('environmentRecipes.listRuntimes', {
+      repoId: 'repo-1'
+    })
   })
 
   it('replays an ambiguous provision with the same host idempotency key', async () => {

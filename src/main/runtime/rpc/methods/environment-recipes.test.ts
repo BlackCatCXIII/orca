@@ -4,6 +4,7 @@ import type { RpcMethod } from '../core'
 
 const serviceMocks = vi.hoisted(() => ({
   list: vi.fn(),
+  listRuntimes: vi.fn(),
   provision: vi.fn(),
   suspend: vi.fn(),
   resume: vi.fn(),
@@ -12,6 +13,7 @@ const serviceMocks = vi.hoisted(() => ({
 
 vi.mock('../../../environment-recipe-runtime-rpc-service', () => ({
   listEnvironmentRecipesForRpc: serviceMocks.list,
+  listEnvironmentRecipeRuntimesForRpc: serviceMocks.listRuntimes,
   provisionEnvironmentRecipeForRpc: serviceMocks.provision,
   suspendEnvironmentRecipeForRpc: serviceMocks.suspend,
   resumeEnvironmentRecipeForRpc: serviceMocks.resume,
@@ -45,6 +47,16 @@ describe('environment recipe RPC authorization', () => {
         }
       )
     ).toThrow('authenticated paired device')
+  })
+
+  it('requires pairing before recovering runtime IDs', () => {
+    expect(() =>
+      method(ENVIRONMENT_RECIPE_RPC_METHODS.listRuntimes).handler(
+        { repoId: 'repo-1' },
+        { runtime: { listRepos: () => [] } as never, userDataPath: '/host-owned-data' }
+      )
+    ).toThrow('authenticated paired device')
+    expect(serviceMocks.listRuntimes).not.toHaveBeenCalled()
   })
 
   it('keeps admitted host mutations independent of transport aborts for cutover replay', async () => {

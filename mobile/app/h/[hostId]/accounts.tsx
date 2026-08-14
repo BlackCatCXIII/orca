@@ -34,6 +34,7 @@ import {
 } from '../../../src/components/codex-reset-credit'
 import { CodexResetCreditAction } from '../../../src/components/CodexResetCreditAction'
 import { useCodexResetCreditAction } from '../../../src/components/use-codex-reset-credit-action'
+import { EnvironmentWorkspacesHeaderButton } from '../../../src/environment-recipes/EnvironmentWorkspacesHeaderButton'
 
 export default function AccountsScreen() {
   const router = useRouter()
@@ -340,6 +341,10 @@ export default function AccountsScreen() {
             </Text>
           ) : null}
         </View>
+        <EnvironmentWorkspacesHeaderButton
+          disabled={connState !== 'connected'}
+          onPress={() => router.push(`/h/${hostId}/environment-workspaces`)}
+        />
         <Pressable
           style={styles.iconButton}
           onPress={refresh}

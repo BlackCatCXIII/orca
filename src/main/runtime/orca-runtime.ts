@@ -252,10 +252,12 @@ import type {
   WorktreeRemoteBranchConflictEvent
 } from '../../shared/worktree/base-ref-drift-types'
 import type {
+  AdoptProvisionedRootArgs,
   CreateWorktreeResult,
   ForceDeleteWorktreeBranchResult,
   RemoveWorktreeResult
 } from '../../shared/worktree/create-types'
+import { adoptProvisionedRootSshCheckout } from '../provisioned-root-ssh-adoption'
 import type { WorktreeStartupLaunch } from '../../shared/worktree/launch-types'
 import type {
   WorkspaceLineage,
@@ -23241,6 +23243,62 @@ export class OrcaRuntimeService {
           }
         : {})
     }
+  }
+
+  async adoptManagedProvisionedRoot(args: {
+    repoId: string
+    request: AdoptProvisionedRootArgs
+    activate: boolean
+  }): Promise<CreateWorktreeResult> {
+    if (!this.store) {
+      throw new Error('runtime_unavailable')
+    }
+    const matches = this.store
+      .getRepos()
+      .filter(
+        (repo) =>
+          repo.id === args.repoId &&
+          getRepoExecutionHostId(repo) === args.request.executionHostId &&
+          !isFolderRepo(repo)
+      )
+    if (matches.length !== 1) {
+      throw new Error('Provisioned-root repository ownership is missing or ambiguous.')
+    }
+    const repo = matches[0]!
+    const isRepoCurrent = (): boolean => {
+      const current = this.store
+        ?.getRepos()
+        .filter(
+          (candidate) =>
+            candidate.id === repo.id &&
+            getRepoExecutionHostId(candidate) === args.request.executionHostId &&
+            !isFolderRepo(candidate)
+        )
+      return (
+        current?.length === 1 &&
+        current[0]?.path === repo.path &&
+        (current[0]?.connectionId ?? null) === (repo.connectionId ?? null)
+      )
+    }
+    const result = await adoptProvisionedRootSshCheckout({
+      userDataPath: app.getPath('userData'),
+      request: args.request,
+      repo,
+      store: this.requireStore(),
+      isRepoCurrent
+    })
+    this.invalidateResolvedWorktreeCache()
+    this.notifyWorktreesChanged(repo.id)
+    this.emitWorktreeLifecycle({
+      kind: 'created',
+      worktreeId: result.worktree.id,
+      path: result.worktree.path,
+      branch: result.worktree.branch
+    })
+    if (args.activate) {
+      this.notifyActivateWorktree(repo.id, result.worktree.id)
+    }
+    return result
   }
 
   private async createManagedRemoteWorktree(

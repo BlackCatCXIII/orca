@@ -10,6 +10,7 @@ import type { EphemeralVmRuntimeRecord } from './ephemeral-vm-runtimes'
 
 export const ENVIRONMENT_RECIPE_RPC_METHODS = {
   list: 'environmentRecipes.list',
+  listRuntimes: 'environmentRecipes.listRuntimes',
   provision: 'environmentRecipes.provision',
   suspend: 'environmentRecipes.suspend',
   resume: 'environmentRecipes.resume',
@@ -98,6 +99,17 @@ export const EnvironmentRecipeListResultSchema = z
   .strict()
 
 export type EnvironmentRecipeListResult = z.infer<typeof EnvironmentRecipeListResultSchema>
+
+export const EnvironmentRecipeRuntimeListResultSchema = z
+  .object({
+    repoId: z.string().min(1),
+    runtimes: z.array(EnvironmentRecipeRuntimeSchema).max(100)
+  })
+  .strict()
+
+export type EnvironmentRecipeRuntimeListResult = z.infer<
+  typeof EnvironmentRecipeRuntimeListResultSchema
+>
 
 export function toEnvironmentRecipeDescriptor(
   repoId: string,

@@ -39,6 +39,7 @@ vi.mock('./ephemeral-vm-runtime-ssh', async (importOriginal) => ({
 
 import {
   destroyEnvironmentRecipeForRpc,
+  listEnvironmentRecipeRuntimesForRpc,
   listEnvironmentRecipesForRpc,
   provisionEnvironmentRecipeForRpc,
   resetEnvironmentRecipeRpcStateForTests,
@@ -138,6 +139,22 @@ afterEach(() => {
 })
 
 describe('remote environment recipe runtime service', () => {
+  it('recovers durable host-owned runtime IDs without exposing provider metadata', async () => {
+    upsertEphemeralVmRuntime(userDataPath, runningRuntime())
+    upsertEphemeralVmRuntime(
+      userDataPath,
+      runningRuntime({ id: 'runtime-cleaned', status: 'cleaned' })
+    )
+
+    const result = await listEnvironmentRecipeRuntimesForRpc(deps(), 'repo-1')
+
+    expect(result.runtimes).toHaveLength(1)
+    expect(result.runtimes[0]).toMatchObject({ runtimeId: 'runtime-existing', status: 'running' })
+    expect(JSON.stringify(result)).not.toContain('secret-token')
+    expect(JSON.stringify(result)).not.toContain('/secret/key')
+    expect(JSON.stringify(result)).not.toContain(TEST_HOST_FINGERPRINT)
+  })
+
   it('does not execute recipes from an SSH or nested-runtime repo projection', async () => {
     const remoteDeps = deps()
     const [repo] = remoteDeps.runtime.listRepos()

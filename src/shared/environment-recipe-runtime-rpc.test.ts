@@ -79,6 +79,7 @@ describe('environment recipe runtime RPC contract', () => {
     expect(RUNTIME_CAPABILITIES).toContain(ENVIRONMENT_RECIPE_LIFECYCLE_RUNTIME_CAPABILITY)
     expect(Object.values(ENVIRONMENT_RECIPE_RPC_METHODS)).toEqual([
       'environmentRecipes.list',
+      'environmentRecipes.listRuntimes',
       'environmentRecipes.provision',
       'environmentRecipes.suspend',
       'environmentRecipes.resume',

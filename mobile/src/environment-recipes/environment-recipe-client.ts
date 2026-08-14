@@ -1,52 +1,43 @@
 import {
-  ENVIRONMENT_RECIPE_RPC_METHODS,
-  EnvironmentRecipeListResultSchema,
-  EnvironmentRecipeRuntimeSchema,
-  type EnvironmentRecipeListResult,
-  type EnvironmentRecipeRuntime
+  destroyEnvironmentRecipe,
+  listEnvironmentRecipeRuntimes,
+  listEnvironmentRecipes,
+  provisionEnvironmentRecipe,
+  resumeEnvironmentRecipe,
+  supportsEnvironmentRecipeLifecycle,
+  suspendEnvironmentRecipe,
+  type EnvironmentRecipeLifecycleArgs,
+  type EnvironmentRecipeProvisionArgs,
+  type EnvironmentRecipeRequest
+} from '../../../src/shared/environment-recipe-client'
+import type {
+  EnvironmentRecipeListResult,
+  EnvironmentRecipeRuntime,
+  EnvironmentRecipeRuntimeListResult
 } from '../../../src/shared/environment-recipe-runtime-rpc'
-import { ENVIRONMENT_RECIPE_LIFECYCLE_RUNTIME_CAPABILITY } from '../../../src/shared/protocol-version'
 import type { RpcClient } from '../transport/rpc-client'
 import { isRpcDeliveryUnknown } from '../transport/rpc-delivery-ambiguity'
 import { isLogicalClientCutoverError } from '../transport/stable-logical-rpc-client'
 
-const RECIPE_RPC_TIMEOUT_MS = 10 * 60_000
-const MAX_AMBIGUOUS_RETRIES = 3
+export type MobileEnvironmentRecipeProvisionArgs = EnvironmentRecipeProvisionArgs
+export type MobileEnvironmentRecipeLifecycleArgs = EnvironmentRecipeLifecycleArgs
 
-type RecipeScope = {
-  repoId: string
-  recipeId: string
-}
+export { supportsEnvironmentRecipeLifecycle }
 
-export type MobileEnvironmentRecipeProvisionArgs = RecipeScope & {
-  clientMutationId: string
-  projectId?: string
-  workspaceId?: string
-  workspaceName?: string
-  branch?: string
-  ref?: string
-}
-
-export type MobileEnvironmentRecipeLifecycleArgs = RecipeScope & {
-  runtimeId: string
-  clientMutationId: string
-}
-
-export function supportsEnvironmentRecipeLifecycle(capabilities: readonly string[]): boolean {
-  return capabilities.includes(ENVIRONMENT_RECIPE_LIFECYCLE_RUNTIME_CAPABILITY)
-}
-
-export async function listMobileEnvironmentRecipes(
+export function listMobileEnvironmentRecipes(
   client: Pick<RpcClient, 'sendRequest'>,
   capabilities: readonly string[],
   repoId: string
 ): Promise<EnvironmentRecipeListResult> {
-  requireCapability(capabilities)
-  const response = await client.sendRequest(ENVIRONMENT_RECIPE_RPC_METHODS.list, { repoId })
-  if (!response.ok) {
-    throw new Error(response.error.message)
-  }
-  return EnvironmentRecipeListResultSchema.parse(response.result)
+  return listEnvironmentRecipes(mobileRequest(client), capabilities, repoId)
+}
+
+export function listMobileEnvironmentRecipeRuntimes(
+  client: Pick<RpcClient, 'sendRequest'>,
+  capabilities: readonly string[],
+  repoId: string
+): Promise<EnvironmentRecipeRuntimeListResult> {
+  return listEnvironmentRecipeRuntimes(mobileRequest(client), capabilities, repoId)
 }
 
 export function provisionMobileEnvironmentRecipe(
@@ -54,7 +45,7 @@ export function provisionMobileEnvironmentRecipe(
   capabilities: readonly string[],
   args: MobileEnvironmentRecipeProvisionArgs
 ): Promise<EnvironmentRecipeRuntime> {
-  return sendMutation(client, capabilities, ENVIRONMENT_RECIPE_RPC_METHODS.provision, args)
+  return provisionEnvironmentRecipe(mobileRequest(client), capabilities, args, isAmbiguous)
 }
 
 export function suspendMobileEnvironmentRecipe(
@@ -62,7 +53,7 @@ export function suspendMobileEnvironmentRecipe(
   capabilities: readonly string[],
   args: MobileEnvironmentRecipeLifecycleArgs
 ): Promise<EnvironmentRecipeRuntime> {
-  return sendMutation(client, capabilities, ENVIRONMENT_RECIPE_RPC_METHODS.suspend, args)
+  return suspendEnvironmentRecipe(mobileRequest(client), capabilities, args, isAmbiguous)
 }
 
 export function resumeMobileEnvironmentRecipe(
@@ -70,7 +61,7 @@ export function resumeMobileEnvironmentRecipe(
   capabilities: readonly string[],
   args: MobileEnvironmentRecipeLifecycleArgs
 ): Promise<EnvironmentRecipeRuntime> {
-  return sendMutation(client, capabilities, ENVIRONMENT_RECIPE_RPC_METHODS.resume, args)
+  return resumeEnvironmentRecipe(mobileRequest(client), capabilities, args, isAmbiguous)
 }
 
 export function destroyMobileEnvironmentRecipe(
@@ -78,38 +69,23 @@ export function destroyMobileEnvironmentRecipe(
   capabilities: readonly string[],
   args: MobileEnvironmentRecipeLifecycleArgs
 ): Promise<EnvironmentRecipeRuntime> {
-  return sendMutation(client, capabilities, ENVIRONMENT_RECIPE_RPC_METHODS.destroy, args)
+  return destroyEnvironmentRecipe(mobileRequest(client), capabilities, args, isAmbiguous)
 }
 
-async function sendMutation(
-  client: Pick<RpcClient, 'sendRequest'>,
-  capabilities: readonly string[],
-  method: string,
-  params: MobileEnvironmentRecipeProvisionArgs | MobileEnvironmentRecipeLifecycleArgs
-): Promise<EnvironmentRecipeRuntime> {
-  requireCapability(capabilities)
-  for (let retry = 0; ; retry += 1) {
-    try {
-      const response = await client.sendRequest(method, params, {
-        timeoutMs: RECIPE_RPC_TIMEOUT_MS
+function mobileRequest(client: Pick<RpcClient, 'sendRequest'>): EnvironmentRecipeRequest {
+  return async (method, params, options) => {
+    const response = options
+      ? await client.sendRequest(method, params, options)
+      : await client.sendRequest(method, params)
+    if (!response.ok) {
+      throw Object.assign(new Error('Environment workspace RPC failed.'), {
+        code: response.error.code
       })
-      if (!response.ok) {
-        throw new Error(response.error.message)
-      }
-      return EnvironmentRecipeRuntimeSchema.parse(response.result)
-    } catch (error) {
-      if (
-        retry >= MAX_AMBIGUOUS_RETRIES ||
-        (!isRpcDeliveryUnknown(error) && !isLogicalClientCutoverError(error))
-      ) {
-        throw error
-      }
     }
+    return response.result
   }
 }
 
-function requireCapability(capabilities: readonly string[]): void {
-  if (!supportsEnvironmentRecipeLifecycle(capabilities)) {
-    throw new Error('Update Orca on this host to manage environment recipes remotely.')
-  }
+function isAmbiguous(error: unknown): boolean {
+  return isRpcDeliveryUnknown(error) || isLogicalClientCutoverError(error)
 }

@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { ENVIRONMENT_RECIPE_RPC_METHODS } from '../../../../shared/environment-recipe-runtime-rpc'
 import {
   destroyEnvironmentRecipeForRpc,
+  listEnvironmentRecipeRuntimesForRpc,
   listEnvironmentRecipesForRpc,
   provisionEnvironmentRecipeForRpc,
   resumeEnvironmentRecipeForRpc,
@@ -63,6 +64,12 @@ export const ENVIRONMENT_RECIPE_METHODS: readonly RpcMethod[] = [
     name: ENVIRONMENT_RECIPE_RPC_METHODS.list,
     params: ListRecipes,
     handler: (params, context) => listEnvironmentRecipesForRpc(dependencies(context), params.repoId)
+  }),
+  defineMethod({
+    name: ENVIRONMENT_RECIPE_RPC_METHODS.listRuntimes,
+    params: ListRecipes,
+    handler: (params, context) =>
+      listEnvironmentRecipeRuntimesForRpc(dependencies(context), params.repoId)
   }),
   defineMethod({
     name: ENVIRONMENT_RECIPE_RPC_METHODS.provision,

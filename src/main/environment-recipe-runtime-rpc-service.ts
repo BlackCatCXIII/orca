@@ -5,6 +5,7 @@ import {
   toEnvironmentRecipeDescriptor,
   toEnvironmentRecipeRuntime,
   type EnvironmentRecipeListResult,
+  type EnvironmentRecipeRuntimeListResult,
   type EnvironmentRecipeRuntime
 } from '../shared/environment-recipe-runtime-rpc'
 import { listEphemeralVmRuntimes } from '../shared/ephemeral-vm-runtime-store'
@@ -68,6 +69,21 @@ export async function listEnvironmentRecipesForRpc(
   return {
     repoId,
     recipes: recipes.map((recipe) => toEnvironmentRecipeDescriptor(repoId, recipe))
+  }
+}
+
+export function listEnvironmentRecipeRuntimesForRpc(
+  deps: EnvironmentRecipeRuntimeRpcDependencies,
+  repoId: string
+): EnvironmentRecipeRuntimeListResult {
+  requireEnvironmentRecipeRepo(deps.runtime, repoId)
+  return {
+    repoId,
+    runtimes: listEphemeralVmRuntimes(deps.userDataPath)
+      .filter((runtime) => runtime.repoId === repoId && runtime.status !== 'cleaned')
+      .sort((left, right) => right.updatedAt - left.updatedAt)
+      .slice(0, 100)
+      .map((runtime) => toEnvironmentRecipeRuntime(runtime, runtime.recipe))
   }
 }
 

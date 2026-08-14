@@ -187,6 +187,14 @@ export const WorktreeCreate = z
     // Why: mobile retries a create interrupted by a connection migration with the
     // same key so the host dedupes instead of spawning a duplicate worktree.
     clientMutationId: z.string().min(1).max(128).optional(),
+    provisionedRoot: z
+      .object({
+        runtimeId: z.string().min(1).max(512),
+        executionHostId: z.string().startsWith('ssh:'),
+        expectedPath: z.string().min(1).max(4096)
+      })
+      .strict()
+      .optional(),
     automationProvenanceRequest: AutomationWorkspaceProvenanceRequest.optional(),
     cliProvenanceRequest: CliWorkspaceProvenanceRequest.optional()
   })

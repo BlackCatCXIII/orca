@@ -10691,6 +10691,24 @@
               "disconnectFailed": "Could not remove the saved Bitbucket credential."
             }
           }
+        },
+        "RemoteEnvironmentWorkspacesSection": {
+          "loadError": "Could not load environment workspaces from this host.",
+          "title": "Remote environment workspaces",
+          "description": "Provision and manage recipe-backed SSH workspaces on the paired host.",
+          "refresh": "Refresh remote environment workspaces",
+          "updateRequired": "Update Orca on this host to manage environment workspaces remotely.",
+          "repository": "Repository",
+          "eligibleRecipe": "Eligible recipe",
+          "provision": "Provision and open",
+          "none": "No managed workspaces yet.",
+          "open": "Open",
+          "suspend": "Suspend",
+          "resume": "Resume",
+          "destroy": "Destroy",
+          "destroyTitle": "Destroy environment workspace?",
+          "destroyDescription": "This permanently destroys the provider workspace.",
+          "cancel": "Cancel"
         }
       },
       "right": {

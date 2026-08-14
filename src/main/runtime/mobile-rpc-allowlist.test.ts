@@ -38,6 +38,7 @@ const MOBILE_DYNAMIC_RPC_METHODS = [
   'github.project.deleteIssueCommentBySlug',
   'hostedReview.forBranch',
   'environmentRecipes.list',
+  'environmentRecipes.listRuntimes',
   'environmentRecipes.provision',
   'environmentRecipes.suspend',
   'environmentRecipes.resume',
