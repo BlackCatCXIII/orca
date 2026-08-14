@@ -209,6 +209,11 @@ const MOBILE_RPC_METHOD_ALLOWLIST = new Set([
   'clipboard.saveImageAsTempFile',
   'clipboard.startImageUpload',
   'diagnostics.memory',
+  'environmentRecipes.list',
+  'environmentRecipes.provision',
+  'environmentRecipes.suspend',
+  'environmentRecipes.resume',
+  'environmentRecipes.destroy',
   'files.browseServerDir',
   'files.createFile',
   'files.list',
@@ -550,7 +555,7 @@ export class OrcaRuntimeRpcServer {
     metadataOwnershipPollMs = RUNTIME_METADATA_OWNERSHIP_POLL_MS
   }: OrcaRuntimeRpcServerOptions) {
     this.runtime = runtime
-    this.dispatcher = new RpcDispatcher({ runtime })
+    this.dispatcher = new RpcDispatcher({ runtime, userDataPath })
     this.userDataPath = userDataPath
     this.pid = pid
     this.platform = platform

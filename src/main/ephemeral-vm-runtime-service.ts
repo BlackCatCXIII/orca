@@ -1,11 +1,9 @@
 import type { OrcaVmRecipe } from '../shared/orca-yaml-hook-types'
 import {
   listEphemeralVmRuntimes,
-  updateEphemeralVmRuntimeStatus,
-  upsertEphemeralVmRuntime
+  updateEphemeralVmRuntimeStatus
 } from '../shared/ephemeral-vm-runtime-store'
 import type { EphemeralVmRuntimeRecord } from '../shared/ephemeral-vm-runtimes'
-import { getEphemeralVmRecipeResultConnection } from '../shared/ephemeral-vm-recipes'
 import {
   runEphemeralVmRecipeCleanup,
   runEphemeralVmRecipeResume,
@@ -17,11 +15,13 @@ import {
 } from './ephemeral-vm-recipe-runner'
 import { cleanupFailedEphemeralVmStart } from './ephemeral-vm-failed-start-cleanup'
 import { provisionedRootChangedDuringResume } from './ephemeral-vm-resume-integrity'
+import { recordProvisionedEphemeralVmRuntime } from './ephemeral-vm-runtime-recording'
 
 export type ProvisionEphemeralVmRuntimeArgs = {
   userDataPath: string
   repoPath: string
   recipe: OrcaVmRecipe
+  runtimeId?: string
   repoId?: string
   projectId?: string
   workspaceId?: string
@@ -103,6 +103,7 @@ export async function provisionEphemeralVmRuntime(
     repoPath: args.repoPath,
     recipe: args.recipe,
     context: {
+      instanceId: args.runtimeId,
       projectId: args.projectId,
       workspaceId: args.workspaceId,
       workspaceName: args.workspaceName,
@@ -126,23 +127,7 @@ export async function provisionEphemeralVmRuntime(
   }
 
   const now = args.now ?? Date.now()
-  const connection = getEphemeralVmRecipeResultConnection(start.result)
-  const runtime = upsertEphemeralVmRuntime(args.userDataPath, {
-    id: start.context.instanceId ?? start.context.recipeId,
-    recipeId: args.recipe.id,
-    recipe: args.recipe,
-    ...(args.repoId ? { repoId: args.repoId } : {}),
-    ...(args.projectId ? { projectId: args.projectId } : {}),
-    ...(args.workspaceId ? { workspaceId: args.workspaceId } : {}),
-    ...(args.workspaceName ? { workspaceName: args.workspaceName } : {}),
-    status: 'running',
-    connectionMode: connection.type,
-    cleanupStatus: args.recipe.destroyDisabled ? 'disabled' : 'not_started',
-    ...(args.recipe.destroyDisabled ? { cleanupDisabled: true } : {}),
-    createdAt: now,
-    updatedAt: now,
-    recipeResult: start.result
-  })
+  const runtime = await recordProvisionedEphemeralVmRuntime(args, start, now)
 
   return { ok: true, start, runtime }
 }

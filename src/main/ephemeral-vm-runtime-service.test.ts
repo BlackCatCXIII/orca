@@ -181,6 +181,39 @@ describe('ephemeral VM runtime service', () => {
     expect(listEphemeralVmRuntimes(userDataPath)).toEqual([])
   })
 
+  it('destroys a provisioned resource when the runtime record cannot be persisted', async () => {
+    const repoPath = makeDir('orca-ephemeral-vm-service-repo-')
+    const userDataPath = join(repoPath, 'not-a-directory')
+    const startPath = join(repoPath, 'start.js')
+    const cleanupPath = join(repoPath, 'cleanup.js')
+    writeFileSync(userDataPath, 'file')
+    writeFileSync(
+      startPath,
+      `console.log(${JSON.stringify(
+        JSON.stringify({
+          schemaVersion: 1,
+          pairingCode: makePairingCode(),
+          projectRoot: '/workspace/repo'
+        })
+      )})`
+    )
+    writeFileSync(cleanupPath, "require('fs').writeFileSync('cleanup-ran.txt', 'yes')")
+
+    await expect(
+      provisionEphemeralVmRuntime({
+        userDataPath,
+        repoPath,
+        recipe: {
+          id: 'cloud-sandbox',
+          name: 'Cloud Sandbox',
+          create: nodeCommand(startPath),
+          destroy: nodeCommand(cleanupPath)
+        }
+      })
+    ).rejects.toThrow()
+    expect(readFileSync(join(repoPath, 'cleanup-ran.txt'), 'utf8')).toBe('yes')
+  })
+
   it('destroys a provisioned resource when its checkout handshake is incompatible', async () => {
     const userDataPath = makeDir('orca-ephemeral-vm-service-user-data-')
     const repoPath = makeDir('orca-ephemeral-vm-service-repo-')
