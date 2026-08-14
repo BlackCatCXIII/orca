@@ -28,6 +28,11 @@ describe('getProvisionedRootCreateOptions', () => {
         request({
           ephemeralVmCheckoutMode: 'provisioned-root',
           ephemeralVmRuntimeId: 'runtime-1',
+          ephemeralVmRecipe: {
+            sourceRepoId: 'source-repo-1',
+            recipeId: 'recipe-1',
+            projectId: 'project-1'
+          },
           workspaceRunContext: {
             kind: 'workspace-run',
             projectId: 'project-1',
@@ -40,6 +45,7 @@ describe('getProvisionedRootCreateOptions', () => {
       )
     ).toEqual({
       runtimeId: 'runtime-1',
+      sourceRepoId: 'source-repo-1',
       executionHostId: 'ssh:runtime-ssh-one',
       expectedPath: '/workspace/repo'
     })

@@ -31,6 +31,12 @@ describe('mobile environment recipe mutation journal', () => {
     await expect(loadEnvironmentRecipeMutation('host-1')).resolves.toEqual(entry)
     expect([...values.values()].join('')).not.toContain('credential')
 
+    values.set(
+      'orca.environment-recipe-mutation.v1:host-1',
+      JSON.stringify({ ...entry, identityFile: '/secret/key' })
+    )
+    await expect(loadEnvironmentRecipeMutation('host-1')).resolves.toBeNull()
+
     await clearEnvironmentRecipeMutation('host-1')
     await expect(loadEnvironmentRecipeMutation('host-1')).resolves.toBeNull()
   })

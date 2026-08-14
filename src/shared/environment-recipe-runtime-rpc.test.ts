@@ -6,6 +6,7 @@ import {
 } from './environment-recipe-runtime-rpc'
 import {
   ENVIRONMENT_RECIPE_LIFECYCLE_RUNTIME_CAPABILITY,
+  ENVIRONMENT_RECIPE_MANAGEMENT_RUNTIME_CAPABILITY,
   RUNTIME_CAPABILITIES
 } from './protocol-version'
 import type { EphemeralVmRuntimeRecord } from './ephemeral-vm-runtimes'
@@ -75,8 +76,9 @@ describe('environment recipe runtime RPC contract', () => {
     expect(wire).not.toContain(TEST_HOST_FINGERPRINT)
   })
 
-  it('advertises additive methods behind one explicit mixed-version capability', () => {
+  it('advertises lifecycle and management methods behind distinct capabilities', () => {
     expect(RUNTIME_CAPABILITIES).toContain(ENVIRONMENT_RECIPE_LIFECYCLE_RUNTIME_CAPABILITY)
+    expect(RUNTIME_CAPABILITIES).toContain(ENVIRONMENT_RECIPE_MANAGEMENT_RUNTIME_CAPABILITY)
     expect(Object.values(ENVIRONMENT_RECIPE_RPC_METHODS)).toEqual([
       'environmentRecipes.list',
       'environmentRecipes.listRuntimes',

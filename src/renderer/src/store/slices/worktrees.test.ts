@@ -4972,6 +4972,7 @@ describe('createWorktree base status merge', () => {
         {
           provisionedRoot: {
             runtimeId: 'runtime-1',
+            sourceRepoId: 'source-repo-1',
             executionHostId: 'ssh:runtime-ssh-runtime-1',
             expectedPath: '/workspace/repo'
           }
@@ -4982,6 +4983,7 @@ describe('createWorktree base status merge', () => {
       expect.objectContaining({
         repoId: 'repo1',
         runtimeId: 'runtime-1',
+        sourceRepoId: 'source-repo-1',
         executionHostId: 'ssh:runtime-ssh-runtime-1',
         expectedPath: '/workspace/repo'
       })

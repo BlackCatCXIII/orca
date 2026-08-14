@@ -104,7 +104,7 @@ export const WORKTREE_METHODS: RpcMethod[] = [
       // worktree instead of spawning a duplicate. No key (desktop/CLI) runs plainly.
       context.runtime.dedupeWorktreeCreate(params.repo, params.clientMutationId, async () => {
         const { runtime } = context
-        const provisionedRoot = adoptProvisionedRootFromRpc(runtime, params)
+        const provisionedRoot = adoptProvisionedRootFromRpc(runtime, params, context.userDataPath)
         if (provisionedRoot) {
           return provisionedRoot
         }

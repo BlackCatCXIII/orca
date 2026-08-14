@@ -2,6 +2,7 @@ import type { Project, ProjectHostSetupResult } from '../../../src/shared/projec
 import type { Repo } from '../../../src/shared/repo-types'
 import type { EnvironmentRecipeRuntime } from '../../../src/shared/environment-recipe-runtime-rpc'
 import { EnvironmentRecipeClientError } from '../../../src/shared/environment-recipe-client'
+import { supportsEnvironmentRecipeManagement } from './environment-recipe-client'
 import type { RpcClient } from '../transport/rpc-client'
 
 export type MobileEnvironmentRecipeCatalog = { repos: Repo[]; projects: Project[] }
@@ -39,17 +40,30 @@ export async function loadMobileEnvironmentRecipeCatalog(
 
 export async function adoptMobileEnvironmentWorkspace(
   client: RpcClient,
+  capabilities: readonly string[],
   runtime: EnvironmentRecipeRuntime,
   projects: Project[]
 ): Promise<{ id: string; name: string }> {
+  if (!supportsEnvironmentRecipeManagement(capabilities)) {
+    throw new EnvironmentRecipeClientError(
+      'unsupported_capability',
+      'Update Orca on this host to manage environment workspaces remotely.'
+    )
+  }
   if (runtime.status !== 'running' || runtime.connectionType !== 'ssh' || !runtime.adoption) {
     throw new Error('adoption_unavailable')
   }
   const adoption = runtime.adoption
-  const project = projects.find((candidate) => candidate.sourceRepoIds.includes(runtime.repoId))
-  if (!project) {
+  if (adoption.runtimeId !== runtime.runtimeId || adoption.sourceRepoId !== runtime.repoId) {
+    throw new Error('adoption_identity_mismatch')
+  }
+  const matchingProjects = projects.filter((candidate) =>
+    candidate.sourceRepoIds.includes(adoption.sourceRepoId)
+  )
+  if (matchingProjects.length !== 1) {
     throw new Error('project_unavailable')
   }
+  const project = matchingProjects[0]!
   const name = runtime.workspaceName ?? project.displayName
   const setupResponse = await client.sendRequest('projectHostSetup.setupExistingFolder', {
     projectId: project.id,
@@ -71,7 +85,8 @@ export async function adoptMobileEnvironmentWorkspace(
       activate: true,
       clientMutationId: `environment-runtime-adopt:${runtime.runtimeId}`,
       provisionedRoot: {
-        runtimeId: runtime.runtimeId,
+        runtimeId: adoption.runtimeId,
+        sourceRepoId: adoption.sourceRepoId,
         executionHostId: adoption.executionHostId,
         expectedPath: adoption.expectedPath
       }

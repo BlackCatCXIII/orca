@@ -23247,6 +23247,7 @@ export class OrcaRuntimeService {
 
   async adoptManagedProvisionedRoot(args: {
     repoId: string
+    userDataPath: string
     request: AdoptProvisionedRootArgs
     activate: boolean
   }): Promise<CreateWorktreeResult> {
@@ -23280,21 +23281,24 @@ export class OrcaRuntimeService {
         (current[0]?.connectionId ?? null) === (repo.connectionId ?? null)
       )
     }
-    const result = await adoptProvisionedRootSshCheckout({
-      userDataPath: app.getPath('userData'),
+    const adoption = await adoptProvisionedRootSshCheckout({
+      userDataPath: args.userDataPath,
       request: args.request,
       repo,
       store: this.requireStore(),
       isRepoCurrent
     })
-    this.invalidateResolvedWorktreeCache()
-    this.notifyWorktreesChanged(repo.id)
-    this.emitWorktreeLifecycle({
-      kind: 'created',
-      worktreeId: result.worktree.id,
-      path: result.worktree.path,
-      branch: result.worktree.branch
-    })
+    const { result } = adoption
+    if (adoption.created) {
+      this.invalidateResolvedWorktreeCache()
+      this.notifyWorktreesChanged(repo.id)
+      this.emitWorktreeLifecycle({
+        kind: 'created',
+        worktreeId: result.worktree.id,
+        path: result.worktree.path,
+        branch: result.worktree.branch
+      })
+    }
     if (args.activate) {
       this.notifyActivateWorktree(repo.id, result.worktree.id)
     }

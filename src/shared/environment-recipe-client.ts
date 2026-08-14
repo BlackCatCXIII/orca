@@ -8,7 +8,10 @@ import {
   type EnvironmentRecipeRuntime,
   type EnvironmentRecipeRuntimeListResult
 } from './environment-recipe-runtime-rpc'
-import { ENVIRONMENT_RECIPE_LIFECYCLE_RUNTIME_CAPABILITY } from './protocol-version'
+import {
+  ENVIRONMENT_RECIPE_LIFECYCLE_RUNTIME_CAPABILITY,
+  ENVIRONMENT_RECIPE_MANAGEMENT_RUNTIME_CAPABILITY
+} from './protocol-version'
 
 const RECIPE_RPC_TIMEOUT_MS = 10 * 60_000
 const MAX_AMBIGUOUS_RETRIES = 3
@@ -51,6 +54,13 @@ export function supportsEnvironmentRecipeLifecycle(capabilities: readonly string
   return capabilities.includes(ENVIRONMENT_RECIPE_LIFECYCLE_RUNTIME_CAPABILITY)
 }
 
+export function supportsEnvironmentRecipeManagement(capabilities: readonly string[]): boolean {
+  return (
+    supportsEnvironmentRecipeLifecycle(capabilities) &&
+    capabilities.includes(ENVIRONMENT_RECIPE_MANAGEMENT_RUNTIME_CAPABILITY)
+  )
+}
+
 export function listEnvironmentRecipes(
   request: EnvironmentRecipeRequest,
   capabilities: readonly string[],
@@ -75,7 +85,8 @@ export function listEnvironmentRecipeRuntimes(
     capabilities,
     ENVIRONMENT_RECIPE_RPC_METHODS.listRuntimes,
     { repoId },
-    EnvironmentRecipeRuntimeListResultSchema
+    EnvironmentRecipeRuntimeListResultSchema,
+    true
   )
 }
 
@@ -144,9 +155,14 @@ async function readResult<T>(
   capabilities: readonly string[],
   method: string,
   params: unknown,
-  schema: z.ZodType<T>
+  schema: z.ZodType<T>,
+  management = false
 ): Promise<T> {
-  requireCapability(capabilities)
+  if (management) {
+    requireManagementCapability(capabilities)
+  } else {
+    requireCapability(capabilities)
+  }
   try {
     return schema.parse(await request(method, params))
   } catch (error) {
@@ -177,6 +193,15 @@ async function sendMutation(
 
 function requireCapability(capabilities: readonly string[]): void {
   if (!supportsEnvironmentRecipeLifecycle(capabilities)) {
+    throw new EnvironmentRecipeClientError(
+      'unsupported_capability',
+      'Update Orca on this host to manage environment workspaces remotely.'
+    )
+  }
+}
+
+function requireManagementCapability(capabilities: readonly string[]): void {
+  if (!supportsEnvironmentRecipeManagement(capabilities)) {
     throw new EnvironmentRecipeClientError(
       'unsupported_capability',
       'Update Orca on this host to manage environment workspaces remotely.'

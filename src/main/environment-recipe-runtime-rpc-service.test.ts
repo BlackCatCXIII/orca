@@ -155,6 +155,33 @@ describe('remote environment recipe runtime service', () => {
     expect(JSON.stringify(result)).not.toContain(TEST_HOST_FINGERPRINT)
   })
 
+  it('sorts deterministically before applying the runtime cap', () => {
+    for (let index = 100; index >= 0; index -= 1) {
+      upsertEphemeralVmRuntime(
+        userDataPath,
+        runningRuntime({
+          id: `runtime-${index.toString().padStart(3, '0')}`,
+          createdAt: index,
+          updatedAt: 5
+        })
+      )
+    }
+    upsertEphemeralVmRuntime(
+      userDataPath,
+      runningRuntime({ id: 'runtime-newest', createdAt: 1_000, updatedAt: 6 })
+    )
+
+    const ids = listEnvironmentRecipeRuntimesForRpc(deps(), 'repo-1').runtimes.map(
+      (runtime) => runtime.runtimeId
+    )
+
+    expect(ids).toHaveLength(100)
+    expect(ids).toEqual([
+      'runtime-newest',
+      ...Array.from({ length: 99 }, (_, index) => `runtime-${index.toString().padStart(3, '0')}`)
+    ])
+  })
+
   it('does not execute recipes from an SSH or nested-runtime repo projection', async () => {
     const remoteDeps = deps()
     const [repo] = remoteDeps.runtime.listRepos()

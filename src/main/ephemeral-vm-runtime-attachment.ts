@@ -18,6 +18,12 @@ export function attachEphemeralVmRuntimeToWorkspace(args: {
   if (['cleanup_pending', 'cleanup_failed', 'cleaned'].includes(runtime.status)) {
     throw new Error(`Cannot attach cleaned ephemeral VM runtime: ${args.runtimeId}`)
   }
+  if (runtime.workspaceId && runtime.workspaceId !== args.workspaceId) {
+    throw new Error(`Ephemeral VM runtime is already attached: ${args.runtimeId}`)
+  }
+  if (runtime.workspaceId === args.workspaceId && runtime.status === 'running') {
+    return runtime
+  }
   return updateEphemeralVmRuntimeStatus(args.userDataPath, args.runtimeId, {
     status: 'running',
     workspaceId: args.workspaceId

@@ -1,11 +1,19 @@
 import { describe, expect, it, vi } from 'vitest'
-import { ENVIRONMENT_RECIPE_LIFECYCLE_RUNTIME_CAPABILITY } from './protocol-version'
 import {
+  ENVIRONMENT_RECIPE_LIFECYCLE_RUNTIME_CAPABILITY,
+  ENVIRONMENT_RECIPE_MANAGEMENT_RUNTIME_CAPABILITY
+} from './protocol-version'
+import {
+  listEnvironmentRecipes,
   listEnvironmentRecipeRuntimes,
   provisionEnvironmentRecipe
 } from './environment-recipe-client'
 
 const capabilities = [ENVIRONMENT_RECIPE_LIFECYCLE_RUNTIME_CAPABILITY]
+const managementCapabilities = [
+  ENVIRONMENT_RECIPE_LIFECYCLE_RUNTIME_CAPABILITY,
+  ENVIRONMENT_RECIPE_MANAGEMENT_RUNTIME_CAPABILITY
+]
 const runtime = {
   runtimeId: 'runtime-1',
   repoId: 'repo-1',
@@ -26,6 +34,27 @@ describe('shared environment recipe client', () => {
       'Update Orca on this host'
     )
     expect(request).not.toHaveBeenCalled()
+  })
+
+  it('keeps lifecycle-only hosts on the original methods', async () => {
+    const request = vi.fn().mockResolvedValue({ repoId: 'repo-1', recipes: [] })
+
+    await expect(listEnvironmentRecipes(request, capabilities, 'repo-1')).resolves.toEqual({
+      repoId: 'repo-1',
+      recipes: []
+    })
+    await expect(listEnvironmentRecipeRuntimes(request, capabilities, 'repo-1')).rejects.toThrow(
+      'Update Orca on this host'
+    )
+    expect(request).toHaveBeenCalledTimes(1)
+  })
+
+  it('allows runtime discovery only when both capabilities are advertised', async () => {
+    const request = vi.fn().mockResolvedValue({ repoId: 'repo-1', runtimes: [] })
+
+    await expect(
+      listEnvironmentRecipeRuntimes(request, managementCapabilities, 'repo-1')
+    ).resolves.toEqual({ repoId: 'repo-1', runtimes: [] })
   })
 
   it('keeps the mutation key stable across ambiguous delivery retries', async () => {

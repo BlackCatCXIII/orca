@@ -81,7 +81,10 @@ export function listEnvironmentRecipeRuntimesForRpc(
     repoId,
     runtimes: listEphemeralVmRuntimes(deps.userDataPath)
       .filter((runtime) => runtime.repoId === repoId && runtime.status !== 'cleaned')
-      .sort((left, right) => right.updatedAt - left.updatedAt)
+      .sort(
+        (left, right) =>
+          right.updatedAt - left.updatedAt || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0)
+      )
       .slice(0, 100)
       .map((runtime) => toEnvironmentRecipeRuntime(runtime, runtime.recipe))
   }

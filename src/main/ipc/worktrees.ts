@@ -1,5 +1,5 @@
 /* oxlint-disable max-lines */
-import { app, ipcMain, type BrowserWindow } from 'electron'
+import { ipcMain, type BrowserWindow } from 'electron'
 import { readFile, stat } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import type { Store } from '../persistence'
@@ -2316,14 +2316,17 @@ export function registerWorktreeHandlers(
           request: args.automationProvenanceRequest
         })
         let result: CreateWorktreeResult
+        let created = false
         try {
-          result = await adoptProvisionedRootSshCheckout({
-            userDataPath: app.getPath('userData'),
+          const adoption = await adoptProvisionedRootSshCheckout({
+            userDataPath: store.getProfileStorageDirectory(),
             request: { ...args, automationProvenance },
             repo,
             store,
             isRepoCurrent: () => isCapturedRepoCurrent(store, repo, args.executionHostId)
           })
+          result = adoption.result
+          created = adoption.created
         } catch (error) {
           releaseAutomationWorkspaceProvenanceRequest(args.automationProvenanceRequest)
           track('workspace_create_failed', {
@@ -2334,18 +2337,20 @@ export function registerWorktreeHandlers(
           throw error
         }
         finishAutomationWorkspaceProvenanceRequest(args.automationProvenanceRequest)
-        track('workspace_created', {
-          source,
-          from_existing_branch: false,
-          ...getCohortAtEmit()
-        })
-        notifyWorktreesChanged(mainWindow, repo.id)
-        options?.onWorktreeLifecycle?.({
-          kind: 'created',
-          worktreeId: result.worktree.id,
-          path: result.worktree.path,
-          branch: result.worktree.branch
-        })
+        if (created) {
+          track('workspace_created', {
+            source,
+            from_existing_branch: false,
+            ...getCohortAtEmit()
+          })
+          notifyWorktreesChanged(mainWindow, repo.id)
+          options?.onWorktreeLifecycle?.({
+            kind: 'created',
+            worktreeId: result.worktree.id,
+            path: result.worktree.path,
+            branch: result.worktree.branch
+          })
+        }
         return result
       })
     }

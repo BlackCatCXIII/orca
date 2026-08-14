@@ -19,7 +19,7 @@ import {
   listMobileEnvironmentRecipes,
   provisionMobileEnvironmentRecipe,
   resumeMobileEnvironmentRecipe,
-  supportsEnvironmentRecipeLifecycle,
+  supportsEnvironmentRecipeManagement,
   suspendMobileEnvironmentRecipe
 } from '../../../src/environment-recipes/environment-recipe-client'
 import {
@@ -57,7 +57,7 @@ export default function EnvironmentWorkspacesScreen() {
   const [recipePickerOpen, setRecipePickerOpen] = useState(false)
   const [destroyTarget, setDestroyTarget] = useState<EnvironmentRecipeRuntime | null>(null)
 
-  const supported = supportsEnvironmentRecipeLifecycle(capabilities)
+  const supported = supportsEnvironmentRecipeManagement(capabilities)
   const selectedRepo = catalog.repos.find((repo) => repo.id === repoId)
   const selectedRecipe = recipes.find((recipe) => recipe.recipeId === recipeId)
 
@@ -70,7 +70,7 @@ export default function EnvironmentWorkspacesScreen() {
     try {
       const nextCapabilities = await loadMobileEnvironmentRecipeCapabilities(client)
       setCapabilities(nextCapabilities)
-      if (!supportsEnvironmentRecipeLifecycle(nextCapabilities)) {
+      if (!supportsEnvironmentRecipeManagement(nextCapabilities)) {
         return
       }
       const nextCatalog = await loadMobileEnvironmentRecipeCatalog(client)
@@ -214,7 +214,12 @@ export default function EnvironmentWorkspacesScreen() {
     if (!client) {
       return
     }
-    const worktree = await adoptMobileEnvironmentWorkspace(client, runtime, catalog.projects)
+    const worktree = await adoptMobileEnvironmentWorkspace(
+      client,
+      capabilities,
+      runtime,
+      catalog.projects
+    )
     router.push(
       `/h/${encodeURIComponent(hostId)}/session/${encodeURIComponent(worktree.id)}?name=${encodeURIComponent(worktree.name)}`
     )

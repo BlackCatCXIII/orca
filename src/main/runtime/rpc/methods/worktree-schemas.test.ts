@@ -6,27 +6,44 @@ describe('worktree RPC schemas', () => {
     expect(
       WorktreeCreate.parse({
         repo: 'id:repo-1',
+        clientMutationId: 'adopt-1',
         provisionedRoot: {
           runtimeId: 'runtime-1',
+          sourceRepoId: 'source-repo-1',
           executionHostId: 'ssh:runtime-ssh-runtime-1',
           expectedPath: '/srv/repo'
         }
       }).provisionedRoot
     ).toEqual({
       runtimeId: 'runtime-1',
+      sourceRepoId: 'source-repo-1',
       executionHostId: 'ssh:runtime-ssh-runtime-1',
       expectedPath: '/srv/repo'
     })
     expect(
       WorktreeCreate.safeParse({
         repo: 'id:repo-1',
+        clientMutationId: 'adopt-1',
         provisionedRoot: {
           runtimeId: 'runtime-1',
+          sourceRepoId: 'source-repo-1',
           executionHostId: 'runtime:nested',
           expectedPath: '/srv/repo'
         }
       }).success
     ).toBe(false)
+    expect(
+      WorktreeCreate.safeParse({
+        repo: 'id:repo-1',
+        provisionedRoot: {
+          runtimeId: 'runtime-1',
+          sourceRepoId: 'source-repo-1',
+          executionHostId: 'ssh:runtime-ssh-runtime-1',
+          expectedPath: '/srv/repo'
+        }
+      }).success
+    ).toBe(false)
+    expect(WorktreeCreate.safeParse({ repo: 'id:repo-1', name: 'legacy' }).success).toBe(true)
   })
 
   it('validates additive navigation intent', () => {

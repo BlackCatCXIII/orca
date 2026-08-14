@@ -14,7 +14,10 @@ import type {
   EnvironmentRecipeRuntime,
   EnvironmentRecipeRuntimeListResult
 } from '../../../shared/environment-recipe-runtime-rpc'
-import { ENVIRONMENT_RECIPE_LIFECYCLE_RUNTIME_CAPABILITY } from '../../../shared/protocol-version'
+import {
+  ENVIRONMENT_RECIPE_LIFECYCLE_RUNTIME_CAPABILITY,
+  ENVIRONMENT_RECIPE_MANAGEMENT_RUNTIME_CAPABILITY
+} from '../../../shared/protocol-version'
 import {
   isRecoverableRemoteRuntimeConnectionError,
   toRemoteRuntimeClientErrorLike
@@ -42,6 +45,16 @@ export async function desktopSupportsEnvironmentRecipeLifecycle(
 ): Promise<boolean> {
   return (await capabilities(environmentId)).includes(
     ENVIRONMENT_RECIPE_LIFECYCLE_RUNTIME_CAPABILITY
+  )
+}
+
+export async function desktopSupportsEnvironmentRecipeManagement(
+  environmentId: string
+): Promise<boolean> {
+  const advertised = await capabilities(environmentId)
+  return (
+    advertised.includes(ENVIRONMENT_RECIPE_LIFECYCLE_RUNTIME_CAPABILITY) &&
+    advertised.includes(ENVIRONMENT_RECIPE_MANAGEMENT_RUNTIME_CAPABILITY)
   )
 }
 

@@ -214,6 +214,7 @@ export type WorktreeSlice = {
       startupDraft?: string
       provisionedRoot?: {
         runtimeId: string
+        sourceRepoId: string
         executionHostId: ExecutionHostId
         expectedPath: string
       }

@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
-import { ENVIRONMENT_RECIPE_LIFECYCLE_RUNTIME_CAPABILITY } from '../../../src/shared/protocol-version'
+import {
+  ENVIRONMENT_RECIPE_LIFECYCLE_RUNTIME_CAPABILITY,
+  ENVIRONMENT_RECIPE_MANAGEMENT_RUNTIME_CAPABILITY
+} from '../../../src/shared/protocol-version'
 import { markRpcDeliveryUnknown } from '../transport/rpc-delivery-ambiguity'
 import type { RpcResponse } from '../transport/types'
 import {
@@ -9,7 +12,10 @@ import {
   suspendMobileEnvironmentRecipe
 } from './environment-recipe-client'
 
-const capabilities = [ENVIRONMENT_RECIPE_LIFECYCLE_RUNTIME_CAPABILITY]
+const capabilities = [
+  ENVIRONMENT_RECIPE_LIFECYCLE_RUNTIME_CAPABILITY,
+  ENVIRONMENT_RECIPE_MANAGEMENT_RUNTIME_CAPABILITY
+]
 
 function success(result: unknown): RpcResponse {
   return { id: 'rpc-1', ok: true, result, _meta: { runtimeId: 'host-1' } }
@@ -83,6 +89,19 @@ describe('mobile environment recipe client', () => {
       listMobileEnvironmentRecipes({ sendRequest }, capabilities, 'repo-1')
     ).resolves.toMatchObject({ recipes: [{ recipeId: 'recipe-1' }] })
     expect(sendRequest).toHaveBeenCalledWith('environmentRecipes.list', { repoId: 'repo-1' })
+  })
+
+  it('does not send runtime discovery to a lifecycle-only host', async () => {
+    const sendRequest = vi.fn()
+
+    await expect(
+      listMobileEnvironmentRecipeRuntimes(
+        { sendRequest },
+        [ENVIRONMENT_RECIPE_LIFECYCLE_RUNTIME_CAPABILITY],
+        'repo-1'
+      )
+    ).rejects.toThrow('Update Orca on this host')
+    expect(sendRequest).not.toHaveBeenCalled()
   })
 
   it('discovers durable host runtime IDs without accepting provider fields', async () => {

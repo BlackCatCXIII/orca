@@ -190,6 +190,7 @@ export const WorktreeCreate = z
     provisionedRoot: z
       .object({
         runtimeId: z.string().min(1).max(512),
+        sourceRepoId: z.string().min(1).max(512),
         executionHostId: z.string().startsWith('ssh:'),
         expectedPath: z.string().min(1).max(4096)
       })
@@ -217,6 +218,9 @@ export const WorktreeCreate = z
         code: z.ZodIssueCode.custom,
         message: 'startupPrompt requires startupAgent'
       })
+    }
+    if (params.provisionedRoot && !params.clientMutationId) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Missing clientMutationId' })
     }
   })
 

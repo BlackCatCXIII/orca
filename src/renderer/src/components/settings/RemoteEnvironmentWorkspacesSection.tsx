@@ -13,7 +13,7 @@ import { toRuntimeExecutionHostId } from '../../../../shared/execution-host'
 import { useAppStore } from '@/store'
 import { callRuntimeRpc } from '@/runtime/runtime-rpc-client'
 import {
-  desktopSupportsEnvironmentRecipeLifecycle,
+  desktopSupportsEnvironmentRecipeManagement,
   destroyDesktopEnvironmentRecipe,
   listDesktopEnvironmentRecipeRuntimes,
   listDesktopEnvironmentRecipes,
@@ -55,7 +55,7 @@ export function RemoteEnvironmentWorkspacesSection({ environmentId }: { environm
   const refreshCatalog = useCallback(async () => {
     setSupported(null)
     try {
-      const nextSupported = await desktopSupportsEnvironmentRecipeLifecycle(environmentId)
+      const nextSupported = await desktopSupportsEnvironmentRecipeManagement(environmentId)
       setSupported(nextSupported)
       if (!nextSupported) {
         return
@@ -127,16 +127,26 @@ export function RemoteEnvironmentWorkspacesSection({ environmentId }: { environm
 
   const adoptAndOpen = useCallback(
     async (runtime: EnvironmentRecipeRuntime): Promise<void> => {
+      if (!(await desktopSupportsEnvironmentRecipeManagement(environmentId))) {
+        throw new EnvironmentRecipeClientError(
+          'unsupported_capability',
+          'Update Orca on this host to manage environment workspaces remotely.'
+        )
+      }
       if (runtime.status !== 'running' || runtime.connectionType !== 'ssh' || !runtime.adoption) {
         throw new Error('adoption_unavailable')
       }
       const adoption = runtime.adoption
-      const project = catalog.projects.find((candidate) =>
-        candidate.sourceRepoIds.includes(runtime.repoId)
+      if (adoption.runtimeId !== runtime.runtimeId || adoption.sourceRepoId !== runtime.repoId) {
+        throw new Error('adoption_identity_mismatch')
+      }
+      const matchingProjects = catalog.projects.filter((candidate) =>
+        candidate.sourceRepoIds.includes(adoption.sourceRepoId)
       )
-      if (!project) {
+      if (matchingProjects.length !== 1) {
         throw new Error('project_unavailable')
       }
+      const project = matchingProjects[0]!
       const target = { kind: 'environment' as const, environmentId }
       const setupResult = await callRuntimeRpc<{ result: ProjectHostSetupResult }>(
         target,
@@ -156,7 +166,8 @@ export function RemoteEnvironmentWorkspacesSection({ environmentId }: { environm
         activate: true,
         clientMutationId: `environment-runtime-adopt:${runtime.runtimeId}`,
         provisionedRoot: {
-          runtimeId: runtime.runtimeId,
+          runtimeId: adoption.runtimeId,
+          sourceRepoId: adoption.sourceRepoId,
           executionHostId: adoption.executionHostId,
           expectedPath: adoption.expectedPath
         }

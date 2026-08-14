@@ -5,6 +5,7 @@ import {
   provisionEnvironmentRecipe,
   resumeEnvironmentRecipe,
   supportsEnvironmentRecipeLifecycle,
+  supportsEnvironmentRecipeManagement,
   suspendEnvironmentRecipe,
   type EnvironmentRecipeLifecycleArgs,
   type EnvironmentRecipeProvisionArgs,
@@ -22,7 +23,7 @@ import { isLogicalClientCutoverError } from '../transport/stable-logical-rpc-cli
 export type MobileEnvironmentRecipeProvisionArgs = EnvironmentRecipeProvisionArgs
 export type MobileEnvironmentRecipeLifecycleArgs = EnvironmentRecipeLifecycleArgs
 
-export { supportsEnvironmentRecipeLifecycle }
+export { supportsEnvironmentRecipeLifecycle, supportsEnvironmentRecipeManagement }
 
 export function listMobileEnvironmentRecipes(
   client: Pick<RpcClient, 'sendRequest'>,
