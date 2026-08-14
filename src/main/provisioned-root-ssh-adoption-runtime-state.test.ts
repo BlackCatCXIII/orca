@@ -107,11 +107,16 @@ describe('provisioned-root adoption runtime state authority', () => {
   )
 
   it.each([
+    ['provisioning', true],
     ['running', true],
+    ['suspended', true],
+    ['suspend_failed', true],
+    ['resume_failed', true],
+    ['failed', true],
     ['cleanup_pending', true],
     ['cleanup_failed', true],
     ['cleaned', false]
-  ] as const)(
+  ] as const satisfies readonly (readonly [EphemeralVmRuntimeStatus, boolean])[])(
     'treats another %s runtime with the same workspace as conflict=%s',
     async (status, conflicts) => {
       seedRuntime(userDataPath)
@@ -122,15 +127,18 @@ describe('provisioned-root adoption runtime state authority', () => {
       } as never)
       const { store, setWorktreeMeta } = makeStore()
       const runtime = new OrcaRuntimeService(store)
+      const effects = observeAdoptionEffects(runtime)
+      const before = listEphemeralVmRuntimes(userDataPath)
 
       if (conflicts) {
         await expect(adopt(runtime, userDataPath)).rejects.toThrow(
           'already attached to another runtime'
         )
         expect(setWorktreeMeta).not.toHaveBeenCalled()
-        expect(
-          listEphemeralVmRuntimes(userDataPath).find((entry) => entry.id === 'runtime-1')
-        ).not.toHaveProperty('workspaceId')
+        expect(listEphemeralVmRuntimes(userDataPath)).toEqual(before)
+        expect(effects.invalidation).not.toHaveBeenCalled()
+        expect(effects.lifecycle).toEqual([])
+        expect(effects.clientEvents).toEqual([])
         return
       }
 
