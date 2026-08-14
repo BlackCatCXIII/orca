@@ -1,0 +1,577 @@
+name: Candidate Artifacts
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-artifacts-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout candidate policy
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+
+      - name: Checkout pinned candidate source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: 338bd227c12067ace0661d95f66ae4ecb5223a68
+          path: source
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@f2b2b233b538f500472c7274c7012f57857d8ce0 # v4.1.0
+        with:
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8 # v4.0.2
+        with:
+          node-version-file: package.json
+
+      - name: Install policy dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Validate workflow and adversarial cases
+        env:
+          CANDIDATE_TEST_SOURCE_ROOT: source
+        run: >-
+          pnpm exec vitest run --config config/vitest.config.ts
+          config/scripts/candidate-artifact-workflow-policy.test.mjs
+
+      - name: Validate workflow policy directly
+        run: node config/scripts/candidate-artifact-workflow-policy.mjs
+
+  desktop-linux-x64:
+    needs: policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout candidate policy
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+
+      - name: Checkout pinned candidate source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: 338bd227c12067ace0661d95f66ae4ecb5223a68
+          path: source
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@f2b2b233b538f500472c7274c7012f57857d8ce0 # v4.1.0
+        with:
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8 # v4.0.2
+        with:
+          node-version-file: source/package.json
+          cache: pnpm
+          cache-dependency-path: source/pnpm-lock.yaml
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-gi gir1.2-atspi-2.0 at-spi2-core xclip xdotool
+          npm install -g node-gyp@11.5.0
+          echo "npm_config_node_gyp=$(npm root -g)/node-gyp/bin/node-gyp.js" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        working-directory: source
+        run: pnpm install --frozen-lockfile
+
+      - name: Build desktop inputs
+        working-directory: source
+        run: pnpm run build:release
+
+      - name: Build unpublished Linux packages
+        working-directory: source
+        run: >-
+          pnpm exec electron-builder --config ../config/electron-builder-candidate.config.cjs
+          --linux deb --x64 --publish never
+
+      - name: Stage exact Linux x64 allowlist
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          debs=(source/dist/orca-ide_*_amd64.deb)
+          [[ "${#debs[@]}" -eq 1 ]] || { echo "Expected exactly one amd64 deb"; exit 1; }
+          metadata=(source/dist/latest*.yml source/dist/*.blockmap)
+          [[ "${#metadata[@]}" -eq 0 ]] || { echo "Update metadata was produced"; exit 1; }
+          ! find source/dist -type f \( -name app-update.yml -o -name '*-mac.json' \) -print -quit | grep -q . || {
+            echo "Embedded update metadata was produced"; exit 1;
+          }
+          mkdir -p candidate-out/desktop-linux-x64
+          cp "${debs[0]}" candidate-out/desktop-linux-x64/orca-hub-linux-x64.deb
+
+      - name: Write Linux x64 provenance
+        run: >-
+          node config/scripts/candidate-artifact-provenance.mjs write
+          --platform desktop-linux-x64 --source source
+          --artifacts candidate-out/desktop-linux-x64
+          --workflow-revision "${{ github.workflow_sha }}"
+
+      - name: Verify Linux x64 provenance
+        run: >-
+          node config/scripts/candidate-artifact-provenance.mjs verify
+          --platform desktop-linux-x64 --source source
+          --artifacts candidate-out/desktop-linux-x64
+          --workflow-revision "${{ github.workflow_sha }}"
+
+      - name: Upload Linux x64 candidates
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: orca-candidate-desktop-linux-x64
+          path: candidate-out/desktop-linux-x64
+          retention-days: 7
+          if-no-files-found: error
+
+  desktop-linux-arm64:
+    needs: policy
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - name: Checkout candidate policy
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+
+      - name: Checkout pinned candidate source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: 338bd227c12067ace0661d95f66ae4ecb5223a68
+          path: source
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@f2b2b233b538f500472c7274c7012f57857d8ce0 # v4.1.0
+        with:
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8 # v4.0.2
+        with:
+          node-version-file: source/package.json
+          cache: pnpm
+          cache-dependency-path: source/pnpm-lock.yaml
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-gi gir1.2-atspi-2.0 at-spi2-core xclip xdotool
+          npm install -g node-gyp@11.5.0
+          echo "npm_config_node_gyp=$(npm root -g)/node-gyp/bin/node-gyp.js" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        working-directory: source
+        run: pnpm install --frozen-lockfile
+
+      - name: Build desktop inputs
+        working-directory: source
+        run: pnpm run build:release
+
+      - name: Build unpublished Linux packages
+        working-directory: source
+        env:
+          ORCA_LINUX_ARM64_RELEASE: '1'
+        run: >-
+          pnpm exec electron-builder --config ../config/electron-builder-candidate.config.cjs
+          --linux deb --arm64 --publish never
+
+      - name: Stage exact Linux arm64 allowlist
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          debs=(source/dist/orca-ide_*_arm64.deb)
+          [[ "${#debs[@]}" -eq 1 ]] || { echo "Expected exactly one arm64 deb"; exit 1; }
+          metadata=(source/dist/latest*.yml source/dist/*.blockmap)
+          [[ "${#metadata[@]}" -eq 0 ]] || { echo "Update metadata was produced"; exit 1; }
+          ! find source/dist -type f \( -name app-update.yml -o -name '*-mac.json' \) -print -quit | grep -q . || {
+            echo "Embedded update metadata was produced"; exit 1;
+          }
+          mkdir -p candidate-out/desktop-linux-arm64
+          cp "${debs[0]}" candidate-out/desktop-linux-arm64/orca-desktop-linux-arm64.deb
+
+      - name: Write Linux arm64 provenance
+        run: >-
+          node config/scripts/candidate-artifact-provenance.mjs write
+          --platform desktop-linux-arm64 --source source
+          --artifacts candidate-out/desktop-linux-arm64
+          --workflow-revision "${{ github.workflow_sha }}"
+
+      - name: Verify Linux arm64 provenance
+        run: >-
+          node config/scripts/candidate-artifact-provenance.mjs verify
+          --platform desktop-linux-arm64 --source source
+          --artifacts candidate-out/desktop-linux-arm64
+          --workflow-revision "${{ github.workflow_sha }}"
+
+      - name: Upload Linux arm64 candidates
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: orca-candidate-desktop-linux-arm64
+          path: candidate-out/desktop-linux-arm64
+          retention-days: 7
+          if-no-files-found: error
+
+  desktop-windows-x64:
+    needs: policy
+    runs-on: windows-2022
+    timeout-minutes: 120
+    steps:
+      - name: Checkout candidate policy
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+
+      - name: Checkout pinned candidate source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: 338bd227c12067ace0661d95f66ae4ecb5223a68
+          path: source
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@f2b2b233b538f500472c7274c7012f57857d8ce0 # v4.1.0
+        with:
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8 # v4.0.2
+        with:
+          node-version-file: source/package.json
+          cache: pnpm
+          cache-dependency-path: source/pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: source
+        run: pnpm install --frozen-lockfile
+
+      - name: Build desktop inputs
+        working-directory: source
+        run: pnpm run build:release
+
+      - name: Build unpublished Windows installer
+        working-directory: source
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: >-
+          pnpm exec electron-builder --config ../config/electron-builder-candidate.config.cjs
+          --win --x64 --publish never
+
+      - name: Stage exact unsigned Windows allowlist
+        shell: pwsh
+        run: |
+          $installer = 'source/dist/orca-windows-setup.exe'
+          if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw 'Missing Windows installer' }
+          if ((Get-AuthenticodeSignature -LiteralPath $installer).Status -ne 'NotSigned') {
+            throw 'Windows candidate unexpectedly has an Authenticode signature'
+          }
+          $metadata = @(Get-ChildItem source/dist -Recurse -File | Where-Object {
+            $_.Name -like 'latest*.yml' -or
+            $_.Name -like '*.blockmap' -or
+            $_.Name -eq 'app-update.yml' -or
+            $_.Name -like '*-mac.json'
+          })
+          if ($metadata.Count -ne 0) { throw 'Update metadata was produced' }
+          New-Item -ItemType Directory -Force candidate-out/desktop-windows-x64 | Out-Null
+          Copy-Item -LiteralPath $installer candidate-out/desktop-windows-x64/orca-desktop-windows-x64.exe
+
+      - name: Write Windows provenance
+        run: >-
+          node config/scripts/candidate-artifact-provenance.mjs write
+          --platform desktop-windows-x64 --source source
+          --artifacts candidate-out/desktop-windows-x64
+          --workflow-revision "${{ github.workflow_sha }}"
+
+      - name: Verify Windows provenance
+        run: >-
+          node config/scripts/candidate-artifact-provenance.mjs verify
+          --platform desktop-windows-x64 --source source
+          --artifacts candidate-out/desktop-windows-x64
+          --workflow-revision "${{ github.workflow_sha }}"
+
+      - name: Upload Windows candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: orca-candidate-desktop-windows-x64
+          path: candidate-out/desktop-windows-x64
+          retention-days: 7
+          if-no-files-found: error
+
+  desktop-macos:
+    needs: policy
+    runs-on: macos-26
+    timeout-minutes: 180
+    steps:
+      - name: Checkout candidate policy
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+
+      - name: Checkout pinned candidate source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: 338bd227c12067ace0661d95f66ae4ecb5223a68
+          path: source
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@f2b2b233b538f500472c7274c7012f57857d8ce0 # v4.1.0
+        with:
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8 # v4.0.2
+        with:
+          node-version-file: source/package.json
+          cache: pnpm
+          cache-dependency-path: source/pnpm-lock.yaml
+
+      - name: Select repository-pinned Xcode
+        run: sudo xcode-select --switch /Applications/Xcode_26.5.app
+
+      - name: Install dependencies
+        working-directory: source
+        run: pnpm install --frozen-lockfile
+
+      - name: Build desktop inputs
+        working-directory: source
+        run: |
+          pnpm run build:desktop
+          pnpm run build:computer-macos
+          pnpm run build:notification-status-macos
+
+      - name: Build unpublished macOS packages
+        working-directory: source
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: >-
+          pnpm run ensure:electron-runtime && pnpm exec electron-builder
+          --config ../config/electron-builder-candidate.config.cjs
+          --mac --x64 --arm64 --publish never
+
+      - name: Stage exact macOS allowlist
+        shell: bash
+        run: |
+          set -euo pipefail
+          for path in \
+            source/dist/orca-macos-x64.dmg \
+            source/dist/orca-macos-arm64.dmg; do
+            [[ -f "$path" ]] || { echo "Missing macOS candidate: $path"; exit 1; }
+          done
+          shopt -s nullglob
+          metadata=(source/dist/latest*.yml source/dist/*.blockmap)
+          [[ "${#metadata[@]}" -eq 0 ]] || { echo "Update metadata was produced"; exit 1; }
+          ! find source/dist -type f \( -name app-update.yml -o -name '*-mac.json' \) -print -quit | grep -q . || {
+            echo "Embedded update metadata was produced"; exit 1;
+          }
+          mkdir -p candidate-out/desktop-macos
+          cp source/dist/orca-macos-x64.dmg candidate-out/desktop-macos/orca-desktop-macos-x64.dmg
+          cp source/dist/orca-macos-arm64.dmg candidate-out/desktop-macos/orca-desktop-macos-arm64.dmg
+
+      - name: Write macOS provenance
+        run: >-
+          node config/scripts/candidate-artifact-provenance.mjs write
+          --platform desktop-macos --source source
+          --artifacts candidate-out/desktop-macos
+          --workflow-revision "${{ github.workflow_sha }}"
+
+      - name: Verify macOS provenance
+        run: >-
+          node config/scripts/candidate-artifact-provenance.mjs verify
+          --platform desktop-macos --source source
+          --artifacts candidate-out/desktop-macos
+          --workflow-revision "${{ github.workflow_sha }}"
+
+      - name: Upload macOS candidates
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: orca-candidate-desktop-macos
+          path: candidate-out/desktop-macos
+          retention-days: 7
+          if-no-files-found: error
+
+  mobile-android:
+    needs: policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout candidate policy
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+
+      - name: Checkout pinned candidate source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: 338bd227c12067ace0661d95f66ae4ecb5223a68
+          path: source
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@f2b2b233b538f500472c7274c7012f57857d8ce0 # v4.1.0
+        with:
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8 # v4.0.2
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: source/mobile/pnpm-lock.yaml
+
+      - name: Select JDK 17
+        shell: bash
+        run: |
+          [[ -d "$JAVA_HOME_17_X64" ]] || { echo "GitHub runner JDK 17 is unavailable"; exit 1; }
+          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+          echo "$JAVA_HOME_17_X64/bin" >> "$GITHUB_PATH"
+
+      - name: Install mobile dependencies
+        working-directory: source/mobile
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Android project
+        working-directory: source/mobile
+        run: pnpm exec expo prebuild --platform android --no-install
+
+      - name: Build Android development APK
+        working-directory: source/mobile/android
+        run: ./gradlew assembleDebug
+
+      - name: Stage exact Android allowlist
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk=source/mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          [[ -f "$apk" ]] || { echo "Missing Android debug APK"; exit 1; }
+          mkdir -p candidate-out/mobile-android
+          cp "$apk" candidate-out/mobile-android/orca-mobile-android-debug.apk
+
+      - name: Write Android provenance
+        run: >-
+          node config/scripts/candidate-artifact-provenance.mjs write
+          --platform mobile-android --source source
+          --artifacts candidate-out/mobile-android
+          --workflow-revision "${{ github.workflow_sha }}"
+
+      - name: Verify Android provenance
+        run: >-
+          node config/scripts/candidate-artifact-provenance.mjs verify
+          --platform mobile-android --source source
+          --artifacts candidate-out/mobile-android
+          --workflow-revision "${{ github.workflow_sha }}"
+
+      - name: Upload Android candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: orca-candidate-mobile-android
+          path: candidate-out/mobile-android
+          retention-days: 7
+          if-no-files-found: error
+
+  mobile-ios-simulator:
+    needs: policy
+    runs-on: macos-26
+    timeout-minutes: 120
+    steps:
+      - name: Checkout candidate policy
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+
+      - name: Checkout pinned candidate source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: 338bd227c12067ace0661d95f66ae4ecb5223a68
+          path: source
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@f2b2b233b538f500472c7274c7012f57857d8ce0 # v4.1.0
+        with:
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8 # v4.0.2
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: source/mobile/pnpm-lock.yaml
+
+      - name: Select repository-pinned Xcode
+        run: sudo xcode-select --switch /Applications/Xcode_26.5.app
+
+      - name: Install mobile dependencies
+        working-directory: source/mobile
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate iOS project
+        working-directory: source/mobile
+        run: pnpm exec expo prebuild --platform ios --no-install
+
+      - name: Install CocoaPods
+        working-directory: source/mobile
+        run: pnpm exec pod-install ios
+
+      - name: Build unsigned iOS simulator app
+        working-directory: source/mobile
+        run: >-
+          xcodebuild -workspace ios/Orca.xcworkspace -scheme Orca
+          -configuration Debug -sdk iphonesimulator
+          -destination 'generic/platform=iOS Simulator'
+          -derivedDataPath build/ios-simulator
+          CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+
+      - name: Stage exact iOS simulator allowlist
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          apps=(source/mobile/build/ios-simulator/Build/Products/Debug-iphonesimulator/*.app)
+          [[ "${#apps[@]}" -eq 1 ]] || { echo "Expected exactly one simulator app"; exit 1; }
+          mkdir -p candidate-out/mobile-ios-simulator
+          COPYFILE_DISABLE=1 tar -czf candidate-out/mobile-ios-simulator/orca-mobile-ios-simulator.tar.gz \
+            -C "$(dirname "${apps[0]}")" "$(basename "${apps[0]}")"
+
+      - name: Write iOS simulator provenance
+        run: >-
+          node config/scripts/candidate-artifact-provenance.mjs write
+          --platform mobile-ios-simulator --source source
+          --artifacts candidate-out/mobile-ios-simulator
+          --workflow-revision "${{ github.workflow_sha }}"
+
+      - name: Verify iOS simulator provenance
+        run: >-
+          node config/scripts/candidate-artifact-provenance.mjs verify
+          --platform mobile-ios-simulator --source source
+          --artifacts candidate-out/mobile-ios-simulator
+          --workflow-revision "${{ github.workflow_sha }}"
+
+      - name: Upload iOS simulator candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: orca-candidate-mobile-ios-simulator
+          path: candidate-out/mobile-ios-simulator
+          retention-days: 7
+          if-no-files-found: error
