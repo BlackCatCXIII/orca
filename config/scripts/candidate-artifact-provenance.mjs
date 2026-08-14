@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto'
-import { readdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { lstat, readdir, readFile, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { execFileSync } from 'node:child_process'
+import { validateCandidateArtifactPolicy } from './candidate-artifact-policy.mjs'
 
 const scriptDirectory = import.meta.dirname
 const defaultPolicyPath = resolve(scriptDirectory, '..', 'candidate-artifacts.json')
@@ -9,17 +10,22 @@ const manifestName = 'provenance.json'
 const shaPattern = /^[0-9a-f]{40}$/
 const sha256Pattern = /^[0-9a-f]{64}$/
 
-async function sha256(path) {
-  const contents = await readFile(path)
+async function readRegularFile(path, label) {
+  const metadata = await lstat(path)
+  if (!metadata.isFile()) {
+    throw new Error(`${label} must be a regular file`)
+  }
+  return { contents: await readFile(path), metadata }
+}
+
+async function sha256(path, label) {
+  const { contents } = await readRegularFile(path, label)
   return createHash('sha256').update(contents).digest('hex')
 }
 
 async function loadPolicy(policyPath = defaultPolicyPath) {
   const policy = JSON.parse(await readFile(policyPath, 'utf8'))
-  if (policy.schemaVersion !== 1 || !shaPattern.test(policy.sourceRevision)) {
-    throw new Error('Candidate artifact policy has an invalid schema or source revision')
-  }
-  return policy
+  return validateCandidateArtifactPolicy(policy)
 }
 
 async function listFiles(directory) {
@@ -83,18 +89,24 @@ export async function writeCandidateProvenance({
 
   const sourceLockfiles = []
   for (const path of policy.lockfiles) {
-    sourceLockfiles.push({ path, sha256: await sha256(join(sourceRoot, path)) })
+    sourceLockfiles.push({
+      path,
+      sha256: await sha256(join(sourceRoot, path), `Source lockfile ${path}`)
+    })
   }
   const artifacts = []
   for (const expected of artifactPolicy) {
     const path = join(artifactDirectory, expected.path)
-    const metadata = await stat(path)
+    const { contents, metadata } = await readRegularFile(
+      path,
+      `Candidate artifact ${expected.path}`
+    )
     artifacts.push({
       path: expected.path,
       role: expected.role,
       mediaType: expected.mediaType,
       sizeBytes: metadata.size,
-      sha256: await sha256(path),
+      sha256: createHash('sha256').update(contents).digest('hex'),
       installability: expected.installability,
       signingStatus: expected.signingStatus,
       publicationStatus: 'unpublished'
@@ -180,7 +192,8 @@ export async function verifyCandidateProvenance({
     assertExactFiles(Object.keys(lockfile), ['path', 'sha256'], `lockfile ${lockfile.path}`)
     if (
       !sha256Pattern.test(lockfile.sha256) ||
-      lockfile.sha256 !== (await sha256(join(sourceRoot, lockfile.path)))
+      lockfile.sha256 !==
+        (await sha256(join(sourceRoot, lockfile.path), `Source lockfile ${lockfile.path}`))
     ) {
       throw new Error(`Lockfile checksum mismatch: ${lockfile.path}`)
     }
@@ -207,7 +220,10 @@ export async function verifyCandidateProvenance({
     )
     const expected = artifactPolicy.find((candidate) => candidate.path === artifact.path)
     const path = join(artifactDirectory, artifact.path)
-    const metadata = await stat(path)
+    const { contents, metadata } = await readRegularFile(
+      path,
+      `Candidate artifact ${artifact.path}`
+    )
     if (
       !expected ||
       artifact.role !== expected.role ||
@@ -217,7 +233,7 @@ export async function verifyCandidateProvenance({
       artifact.publicationStatus !== 'unpublished' ||
       artifact.sizeBytes !== metadata.size ||
       !sha256Pattern.test(artifact.sha256) ||
-      artifact.sha256 !== (await sha256(path))
+      artifact.sha256 !== createHash('sha256').update(contents).digest('hex')
     ) {
       throw new Error(`Artifact provenance mismatch: ${artifact.path}`)
     }

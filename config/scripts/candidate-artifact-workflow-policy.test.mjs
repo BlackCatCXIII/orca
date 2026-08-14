@@ -1,7 +1,8 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { execFileSync } from 'node:child_process'
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { parse } from 'yaml'
 import { expect, test } from 'vitest'
 import {
@@ -12,7 +13,6 @@ import { validateCandidateWorkflow } from './candidate-artifact-workflow-policy.
 
 const workflowPath = resolve('.github/workflows/candidate-artifacts.yml')
 const policyPath = resolve('config/candidate-artifacts.json')
-const sourceRoot = resolve(process.env.CANDIDATE_TEST_SOURCE_ROOT ?? '.')
 const require = createRequire(import.meta.url)
 
 async function fixture() {
@@ -20,6 +20,36 @@ async function fixture() {
     workflow: parse(await readFile(workflowPath, 'utf8')),
     policy: JSON.parse(await readFile(policyPath, 'utf8'))
   }
+}
+
+function git(directory, arguments_) {
+  return execFileSync('git', ['-C', directory, ...arguments_], { encoding: 'utf8' }).trim()
+}
+
+async function createHermeticSource(directory, policy) {
+  const sourceRoot = join(directory, 'source')
+  await mkdir(sourceRoot)
+  for (const path of policy.lockfiles) {
+    const destination = join(sourceRoot, path)
+    await mkdir(dirname(destination), { recursive: true })
+    await copyFile(resolve(path), destination)
+  }
+  git(sourceRoot, ['init', '--quiet'])
+  git(sourceRoot, ['add', '--all'])
+  git(sourceRoot, [
+    '-c',
+    'user.name=Candidate Test',
+    '-c',
+    'user.email=candidate-test@example.invalid',
+    'commit',
+    '--quiet',
+    '-m',
+    'candidate provenance fixture'
+  ])
+  const fixturePolicy = { ...policy, sourceRevision: git(sourceRoot, ['rev-parse', 'HEAD']) }
+  const fixturePolicyPath = join(directory, 'candidate-artifacts.json')
+  await writeFile(fixturePolicyPath, JSON.stringify(fixturePolicy))
+  return { fixturePolicyPath, sourceRoot }
 }
 
 test('accepts the candidate workflow', async () => {
@@ -204,6 +234,21 @@ test('invokes the dual-architecture macOS candidate target', async () => {
   )
 })
 
+test('pins every workflow source checkout to the policy revision', async () => {
+  const { workflow, policy } = await fixture()
+  for (const job of Object.values(workflow.jobs)) {
+    expect(job.steps[0].with).toEqual({
+      ref: '${{ github.workflow_sha }}',
+      'persist-credentials': false
+    })
+    expect(job.steps[1].with).toEqual({
+      ref: policy.sourceRevision,
+      path: 'source',
+      'persist-credentials': false
+    })
+  }
+})
+
 for (const [name, mutate] of adversarialCases) {
   test(`rejects ${name}`, async () => {
     const { workflow, policy } = await fixture()
@@ -215,19 +260,23 @@ for (const [name, mutate] of adversarialCases) {
 test('writes deterministic provenance and fails closed on tampering', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'orca-candidate-'))
   try {
-    await writeFile(join(directory, 'orca-desktop-windows-x64.exe'), 'candidate-bytes')
+    const { policy } = await fixture()
+    const { fixturePolicyPath, sourceRoot } = await createHermeticSource(directory, policy)
+    const artifactDirectory = join(directory, 'artifacts')
+    await mkdir(artifactDirectory)
+    await writeFile(join(artifactDirectory, 'orca-desktop-windows-x64.exe'), 'candidate-bytes')
     const request = {
       platform: 'desktop-windows-x64',
       sourceRoot,
-      artifactDirectory: directory,
+      artifactDirectory,
       workflowRevision: '1111111111111111111111111111111111111111',
-      policyPath
+      policyPath: fixturePolicyPath
     }
     const first = await writeCandidateProvenance(request)
-    const firstBytes = await readFile(join(directory, 'provenance.json'), 'utf8')
+    const firstBytes = await readFile(join(artifactDirectory, 'provenance.json'), 'utf8')
     await writeCandidateProvenance(request)
-    expect(await readFile(join(directory, 'provenance.json'), 'utf8')).toBe(firstBytes)
-    expect(first.sourceRevision).toBe('338bd227c12067ace0661d95f66ae4ecb5223a68')
+    expect(await readFile(join(artifactDirectory, 'provenance.json'), 'utf8')).toBe(firstBytes)
+    expect(first.sourceRevision).toBe(git(sourceRoot, ['rev-parse', 'HEAD']))
 
     await expect(
       verifyCandidateProvenance({
@@ -236,14 +285,32 @@ test('writes deterministic provenance and fails closed on tampering', async () =
       })
     ).rejects.toThrow(/identity fields/)
 
-    await writeFile(join(directory, 'unexpected.txt'), 'unexpected')
+    await writeFile(join(artifactDirectory, 'unexpected.txt'), 'unexpected')
     await expect(verifyCandidateProvenance(request)).rejects.toThrow(/allowlist mismatch/)
-    await rm(join(directory, 'unexpected.txt'))
+    await rm(join(artifactDirectory, 'unexpected.txt'))
 
-    const manifest = JSON.parse(await readFile(join(directory, 'provenance.json'), 'utf8'))
+    const manifest = JSON.parse(await readFile(join(artifactDirectory, 'provenance.json'), 'utf8'))
     delete manifest.sourceRevision
-    await writeFile(join(directory, 'provenance.json'), JSON.stringify(manifest))
+    await writeFile(join(artifactDirectory, 'provenance.json'), JSON.stringify(manifest))
     await expect(verifyCandidateProvenance(request)).rejects.toThrow(/provenance fields/)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('rejects the current checkout when it is not the pinned source', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'orca-candidate-current-'))
+  try {
+    await writeFile(join(directory, 'orca-desktop-windows-x64.exe'), 'candidate-bytes')
+    await expect(
+      writeCandidateProvenance({
+        platform: 'desktop-windows-x64',
+        sourceRoot: resolve('.'),
+        artifactDirectory: directory,
+        workflowRevision: '1111111111111111111111111111111111111111',
+        policyPath
+      })
+    ).rejects.toThrow(/Expected source revision 338bd227c12067ace0661d95f66ae4ecb5223a68/)
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

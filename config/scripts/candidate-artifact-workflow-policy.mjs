@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { parse } from 'yaml'
+import { validateCandidateArtifactPolicy } from './candidate-artifact-policy.mjs'
 
 const workflowRevision = '${{ github.workflow_sha }}'
 const checkoutAction = 'actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683'
@@ -295,6 +296,7 @@ function validateSerializedSurface(workflow) {
 }
 
 export function validateCandidateWorkflow(workflow, policy) {
+  validateCandidateArtifactPolicy(policy)
   const jobs = validateWorkflowShape(workflow, policy)
   validateSerializedSurface(workflow)
   for (const [name, jobValue] of Object.entries(jobs)) {

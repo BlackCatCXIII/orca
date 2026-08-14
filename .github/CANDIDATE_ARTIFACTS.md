@@ -69,14 +69,17 @@ Run the targeted checks from the repository root:
 
 ```sh
 pnpm exec vitest run --config config/vitest.config.ts config/scripts/candidate-artifact-workflow-policy.test.mjs
+pnpm exec vitest run --config config/vitest.config.ts config/scripts/candidate-artifact-policy.test.mjs
 node config/scripts/candidate-artifact-workflow-policy.mjs
 actionlint .github/workflows/candidate-artifacts.yml
-pnpm exec oxfmt --check config/candidate-artifacts.json config/electron-builder-candidate.config.cjs config/scripts/candidate-artifact-provenance.mjs config/scripts/candidate-artifact-workflow-policy.mjs config/scripts/candidate-artifact-workflow-policy.test.mjs .github/CANDIDATE_ARTIFACTS.md
+pnpm exec oxfmt --check config/candidate-artifacts.json config/electron-builder-candidate.config.cjs config/scripts/candidate-artifact-policy.mjs config/scripts/candidate-artifact-policy.test.mjs config/scripts/candidate-artifact-provenance.mjs config/scripts/candidate-artifact-workflow-policy.mjs config/scripts/candidate-artifact-workflow-policy.test.mjs .github/CANDIDATE_ARTIFACTS.md
 ```
 
 The adversarial tests reject push, pull-request, or schedule triggers; mutable action refs;
 write permissions; publishing or signing commands; secret access; unbounded uploads; missing
 provenance validation; extra artifacts; and missing provenance fields.
+Policy validation also rejects unknown fields or platforms, path traversal, symlinked source
+lockfiles, and non-file artifact entries.
 
 Context7 documentation lookup was attempted for GitHub Actions and Expo while implementing
 this workflow, as required by repository policy. Both resolutions failed with `Invalid or
