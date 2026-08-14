@@ -2944,6 +2944,8 @@ export class OrcaRuntimeService {
     string,
     { kind: 'git' | 'folder'; promise: Promise<Repo> }
   >()
+  // Why: host-unaware and host-specific scopes overlap the same repo list and must re-check it in order.
+  private durableRepoAddTailByPath = new Map<string, Promise<void>>()
   private cloneInFlightByPath = new Map<string, Promise<void>>()
   private agentDetector: AgentDetector | null = null
   private ptyForegroundAgentRefreshes = new Map<string, PtyForegroundAgentRefresh>()
@@ -19149,8 +19151,12 @@ export class OrcaRuntimeService {
     kind: 'git' | 'folder' = 'git',
     executionHostId?: ExecutionHostId | null
   ): Promise<Repo> {
-    const targetHostId = parseExecutionHostId(executionHostId)?.id ?? LOCAL_EXECUTION_HOST_ID
-    const scopeKey = `${normalizeRuntimePathForComparison(path)}\0${targetHostId}`
+    const pathKey = normalizeRuntimePathForComparison(path)
+    const targetHostKey =
+      executionHostId == null
+        ? 'host-unaware'
+        : (parseExecutionHostId(executionHostId)?.id ?? executionHostId)
+    const scopeKey = `${pathKey}\0${targetHostKey}`
     const existing = this.durableRepoAddByScope.get(scopeKey)
     if (existing) {
       if (existing.kind !== kind) {
@@ -19161,15 +19167,26 @@ export class OrcaRuntimeService {
       return existing.promise
     }
 
-    const promise = this.addRepoAndFlush(path, kind, executionHostId)
+    const previous = this.durableRepoAddTailByPath.get(pathKey) ?? Promise.resolve()
+    const promise = previous.then(() => this.addRepoAndFlush(path, kind, executionHostId))
+    const tail = promise.then(
+      () => {},
+      () => {}
+    )
     const entry = { kind, promise }
     this.durableRepoAddByScope.set(scopeKey, entry)
+    this.durableRepoAddTailByPath.set(pathKey, tail)
     const clear = (): void => {
       if (this.durableRepoAddByScope.get(scopeKey) === entry) {
         this.durableRepoAddByScope.delete(scopeKey)
       }
     }
     void promise.then(clear, clear)
+    void tail.then(() => {
+      if (this.durableRepoAddTailByPath.get(pathKey) === tail) {
+        this.durableRepoAddTailByPath.delete(pathKey)
+      }
+    })
     return promise
   }
 
