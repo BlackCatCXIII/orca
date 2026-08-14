@@ -18,7 +18,9 @@ const CLI_TO_SERVE_FLAG = new Map([
 const CLI_TO_SERVE_VALUE_FLAG = new Map([
   ['--port', '--serve-port'],
   ['--pairing-address', '--serve-pairing-address'],
-  ['--project-root', '--serve-project-root']
+  ['--project-root', '--serve-project-root'],
+  ['--operator-recipe-catalog', '--serve-operator-recipe-catalog'],
+  ['--operator-recipe-catalog-sha256', '--serve-operator-recipe-catalog-sha256']
 ])
 
 /**
@@ -31,6 +33,8 @@ const VALUE_TAKING_FLAGS = new Set([
   '--serve-port',
   '--serve-pairing-address',
   '--serve-project-root',
+  '--serve-operator-recipe-catalog',
+  '--serve-operator-recipe-catalog-sha256',
   '--user-data-dir',
   '--environment',
   '--pairing-code'
@@ -106,6 +110,41 @@ export function findServeSubcommandIndex(argv: readonly string[]): number {
 /** True when argv already has `--serve` or a bare `serve` CLI subcommand. */
 export function argvRequestsServeMode(argv: readonly string[]): boolean {
   return argv.includes(SERVE_FLAG) || findServeSubcommandIndex(argv) !== -1
+}
+
+export function readOperatorRecipeCatalogServeFlags(
+  argv: readonly string[]
+): { path: string; sha256: string } | null {
+  const path = readUniqueValue(argv, '--serve-operator-recipe-catalog')
+  const sha256 = readUniqueValue(argv, '--serve-operator-recipe-catalog-sha256')
+  if (path === null && sha256 === null) {
+    return null
+  }
+  if (!path || !sha256) {
+    throw new Error('Operator recipe catalog path and SHA-256 flags must be provided together.')
+  }
+  return { path, sha256 }
+}
+
+export function argvHasServeFlag(argv: readonly string[], flag: string): boolean {
+  return argv.some((token) => token === flag || token.startsWith(`${flag}=`))
+}
+
+function readUniqueValue(argv: readonly string[], flag: string): string | null {
+  const occurrences = argv.filter((token) => token === flag || token.startsWith(`${flag}=`))
+  if (occurrences.length > 1) {
+    throw new Error('Operator recipe catalog flags must not be repeated.')
+  }
+  const occurrence = occurrences[0]
+  if (!occurrence) {
+    return null
+  }
+  if (occurrence.startsWith(`${flag}=`)) {
+    return occurrence.slice(flag.length + 1)
+  }
+  const index = argv.indexOf(flag)
+  const value = argv[index + 1]
+  return value && !value.startsWith('--') ? value : ''
 }
 
 /**

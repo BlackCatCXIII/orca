@@ -68,4 +68,20 @@ describe('runtime updater RPC methods', () => {
       remoteUpdateSupport: snapshot.support
     })
   })
+
+  it('reports only digest and recipe IDs for an operator catalog', async () => {
+    const operatorRecipeCatalog = {
+      status: { enabled: true as const, digest: 'a'.repeat(64), recipeIds: ['cloud-box'] },
+      listRecipes: vi.fn(),
+      resolveRecipe: vi.fn()
+    }
+    const result = await handler(STATUS_METHODS, 'status.get')(undefined, {
+      runtime,
+      operatorRecipeCatalog
+    } as never)
+
+    expect(result).toMatchObject({ operatorRecipeCatalog: operatorRecipeCatalog.status })
+    expect(JSON.stringify(result)).not.toContain('/etc/orca')
+    expect(JSON.stringify(result)).not.toContain('secret')
+  })
 })

@@ -15,9 +15,11 @@ import { toEnvironmentRecipeRuntime } from '../shared/environment-recipe-runtime
 import type { EnvironmentRecipeRuntime } from '../shared/environment-recipe-runtime-rpc'
 import { cleanupEphemeralVmRuntime } from './ephemeral-vm-runtime-service'
 import { EnvironmentRecipeRpcError } from './environment-recipe-operation-control'
+import type { OperatorEnvironmentRecipeCatalog } from './operator-environment-recipe-catalog'
 
 type EnvironmentRecipeConnectionContext = {
   userDataPath: string
+  operatorRecipeCatalog?: OperatorEnvironmentRecipeCatalog
 }
 
 export async function finalizeProvisionedEnvironmentRecipeRuntime(
@@ -77,7 +79,9 @@ export async function finalizeProvisionedEnvironmentRecipeRuntime(
       userDataPath: context.userDataPath,
       repoPath: repo.path,
       recipe,
-      runtimeId: runtime.id
+      runtimeId: runtime.id,
+      executionMode: context.operatorRecipeCatalog ? 'direct' : 'shell',
+      operatorRecipeCatalogSha256: context.operatorRecipeCatalog?.status.digest
     }).catch(() => undefined)
     throw failedConnectionSetup('Provision setup', error)
   }

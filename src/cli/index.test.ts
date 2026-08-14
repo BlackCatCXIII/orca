@@ -2179,6 +2179,105 @@ describe('orca cli worktree awareness', () => {
     })
   })
 
+  it('starts operator catalog mode with paired, absolute catalog flags', async () => {
+    serveOrcaAppMock.mockResolvedValue(0)
+    const digest = 'a'.repeat(64)
+
+    await main(
+      [
+        'serve',
+        '--no-pairing',
+        '--operator-recipe-catalog',
+        '/etc/orca/catalog.json',
+        '--operator-recipe-catalog-sha256',
+        digest,
+        '--json'
+      ],
+      '/tmp/repo'
+    )
+
+    expect(serveOrcaAppMock).toHaveBeenCalledWith({
+      json: true,
+      port: null,
+      pairingAddress: null,
+      noPairing: true,
+      mobilePairing: false,
+      recipeJson: false,
+      projectRoot: null,
+      operatorRecipeCatalogPath: '/etc/orca/catalog.json',
+      operatorRecipeCatalogSha256: digest
+    })
+  })
+
+  it.each([
+    [
+      'unpaired flags',
+      ['serve', '--no-pairing', '--operator-recipe-catalog', '/etc/orca/catalog.json'],
+      'path and SHA-256 flags must be provided together'
+    ],
+    [
+      'missing no-pairing',
+      [
+        'serve',
+        '--operator-recipe-catalog',
+        '/etc/orca/catalog.json',
+        '--operator-recipe-catalog-sha256',
+        'a'.repeat(64)
+      ],
+      'requires --no-pairing'
+    ],
+    [
+      'uppercase digest',
+      [
+        'serve',
+        '--no-pairing',
+        '--operator-recipe-catalog',
+        '/etc/orca/catalog.json',
+        '--operator-recipe-catalog-sha256',
+        'A'.repeat(64)
+      ],
+      'lowercase SHA-256'
+    ],
+    [
+      'recipe-json conflict',
+      [
+        'serve',
+        '--no-pairing',
+        '--operator-recipe-catalog',
+        '/etc/orca/catalog.json',
+        '--operator-recipe-catalog-sha256',
+        'a'.repeat(64),
+        '--recipe-json'
+      ],
+      'rejects mobile pairing, recipe JSON, and --project-root'
+    ],
+    [
+      'duplicate path flag',
+      [
+        'serve',
+        '--no-pairing',
+        '--operator-recipe-catalog',
+        '/etc/orca/one.json',
+        '--operator-recipe-catalog',
+        '/etc/orca/two.json',
+        '--operator-recipe-catalog-sha256',
+        'a'.repeat(64)
+      ],
+      'must not be repeated'
+    ]
+  ])('rejects operator catalog %s', async (_name, argv, message) => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const priorExitCode = process.exitCode
+
+    await main(argv, '/tmp/repo')
+
+    expect(serveOrcaAppMock).not.toHaveBeenCalled()
+    expect([...logSpy.mock.calls, ...errSpy.mock.calls].flat().join('\n')).toContain(message)
+    expect(process.exitCode).toBe(1)
+    process.exitCode = priorExitCode
+  })
+
   it('starts a recipe JSON headless server for VM recipes', async () => {
     serveOrcaAppMock.mockResolvedValue(0)
 

@@ -5,6 +5,10 @@
 inputs needed before a separately authorized deployment without granting the build any
 deployment authority.
 
+The support branch intentionally differs from that runtime source: it integrates lifecycle
+contract commit `f910c801aac823bb1b0768e79d1b3c865db295ac` and later operator-catalog support while
+the workflow and policy continue to build exactly `338bd227c12067ace0661d95f66ae4ecb5223a68`.
+
 ## Safety boundary
 
 The workflow has only `workflow_dispatch`, uses `contents: read`, disables persisted Git

@@ -34,6 +34,8 @@ export type ProvisionEphemeralVmRuntimeArgs = {
   signal?: AbortSignal
   onStdout?: (chunk: string) => void
   onStderr?: (chunk: string) => void
+  executionMode?: 'shell' | 'direct'
+  operatorRecipeCatalogSha256?: string
 }
 
 export type ProvisionEphemeralVmRuntimeResult =
@@ -56,6 +58,8 @@ export type CleanupEphemeralVmRuntimeArgs = {
   signal?: AbortSignal
   onStdout?: (chunk: string) => void
   onStderr?: (chunk: string) => void
+  executionMode?: 'shell' | 'direct'
+  operatorRecipeCatalogSha256?: string
 }
 
 export type CleanupEphemeralVmRuntimeResult =
@@ -102,6 +106,7 @@ export async function provisionEphemeralVmRuntime(
   const start = await runEphemeralVmRecipeStart({
     repoPath: args.repoPath,
     recipe: args.recipe,
+    executionMode: args.executionMode,
     context: {
       instanceId: args.runtimeId,
       projectId: args.projectId,
@@ -161,6 +166,7 @@ async function cleanupEphemeralVmRuntimeOnce(
   if (!existing) {
     throw new Error(`Unknown ephemeral VM runtime: ${args.runtimeId}`)
   }
+  requireOperatorRuntimeAuthority(existing, args)
   if (existing.status === 'cleaned') {
     return {
       ok: true,
@@ -180,6 +186,7 @@ async function cleanupEphemeralVmRuntimeOnce(
   const cleanup = await runEphemeralVmRecipeCleanup({
     repoPath: args.repoPath,
     recipe: args.recipe,
+    executionMode: args.executionMode,
     context: contextFromRuntime(args.repoPath, running),
     recipeResult: running.recipeResult,
     signal: args.signal,
@@ -215,9 +222,11 @@ export async function suspendEphemeralVmRuntime(
   if (!existing) {
     throw new Error(`Unknown ephemeral VM runtime: ${args.runtimeId}`)
   }
+  requireOperatorRuntimeAuthority(existing, args)
   const suspend = await runEphemeralVmRecipeSuspend({
     repoPath: args.repoPath,
     recipe: args.recipe,
+    executionMode: args.executionMode,
     context: contextFromRuntime(args.repoPath, existing),
     recipeResult: existing.recipeResult,
     signal: args.signal,
@@ -249,9 +258,11 @@ export async function resumeEphemeralVmRuntime(
   if (!existing) {
     throw new Error(`Unknown ephemeral VM runtime: ${args.runtimeId}`)
   }
+  requireOperatorRuntimeAuthority(existing, args)
   const resume = await runEphemeralVmRecipeResume({
     repoPath: args.repoPath,
     recipe: args.recipe,
+    executionMode: args.executionMode,
     context: contextFromRuntime(args.repoPath, existing),
     recipeResult: existing.recipeResult,
     signal: args.signal,
@@ -282,6 +293,19 @@ export async function resumeEphemeralVmRuntime(
     updatedAt: Date.now()
   })
   return { ok: true, runtime, skipped: resume.skipped }
+}
+
+function requireOperatorRuntimeAuthority(
+  runtime: EphemeralVmRuntimeRecord,
+  args: Pick<CleanupEphemeralVmRuntimeArgs, 'executionMode' | 'operatorRecipeCatalogSha256'>
+): void {
+  if (
+    runtime.operatorRecipeCatalogSha256 &&
+    (args.executionMode !== 'direct' ||
+      args.operatorRecipeCatalogSha256 !== runtime.operatorRecipeCatalogSha256)
+  ) {
+    throw new Error('Operator-managed ephemeral VM runtime is unavailable.')
+  }
 }
 
 function contextFromRuntime(

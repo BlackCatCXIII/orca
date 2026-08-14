@@ -20,7 +20,7 @@ import { getProvisionedRootRecipeRepoUrl } from '../shared/ephemeral-vm-recipe-r
 import {
   environmentRecipeMutationRuntimeId,
   EnvironmentRecipeRpcError,
-  resetEnvironmentRecipeOperationControlForTests,
+  resetEnvironmentRecipeOperationControlForTests as resetRpcState,
   runIdempotentEnvironmentRecipeMutation,
   runSerializedEnvironmentRecipeRuntimeOperation as runRuntimeOperation
 } from './environment-recipe-operation-control'
@@ -34,8 +34,11 @@ import {
   requireEnvironmentRecipeRuntimeScope,
   resolveEnvironmentRecipeRuntimeScope,
   resolveEnvironmentRecipes,
+  isRuntimeBoundToOperatorRecipe,
   type EnvironmentRecipeScope
 } from './environment-recipe-scope'
+import type { OperatorEnvironmentRecipeCatalog } from './operator-environment-recipe-catalog'
+import { listEnvironmentRecipeRuntimes } from './environment-recipe-runtime-list'
 
 export { EnvironmentRecipeRpcError } from './environment-recipe-operation-control'
 
@@ -58,6 +61,7 @@ export type EnvironmentRecipeRuntimeRpcDependencies = {
   userDataPath: string
   pairedDeviceId: string
   getPluginRecipes: () => Promise<readonly OrcaVmRecipe[]>
+  operatorRecipeCatalog?: OperatorEnvironmentRecipeCatalog
 }
 
 export async function listEnvironmentRecipesForRpc(
@@ -65,7 +69,11 @@ export async function listEnvironmentRecipesForRpc(
   repoId: string
 ): Promise<EnvironmentRecipeListResult> {
   const repo = requireEnvironmentRecipeRepo(deps.runtime, repoId)
-  const recipes = await resolveEnvironmentRecipes(repo, deps.getPluginRecipes)
+  const recipes = await resolveEnvironmentRecipes(
+    repo,
+    deps.getPluginRecipes,
+    deps.operatorRecipeCatalog
+  )
   return {
     repoId,
     recipes: recipes.map((recipe) => toEnvironmentRecipeDescriptor(repoId, recipe))
@@ -76,18 +84,7 @@ export function listEnvironmentRecipeRuntimesForRpc(
   deps: EnvironmentRecipeRuntimeRpcDependencies,
   repoId: string
 ): EnvironmentRecipeRuntimeListResult {
-  requireEnvironmentRecipeRepo(deps.runtime, repoId)
-  return {
-    repoId,
-    runtimes: listEphemeralVmRuntimes(deps.userDataPath)
-      .filter((runtime) => runtime.repoId === repoId && runtime.status !== 'cleaned')
-      .sort(
-        (left, right) =>
-          right.updatedAt - left.updatedAt || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0)
-      )
-      .slice(0, 100)
-      .map((runtime) => toEnvironmentRecipeRuntime(runtime, runtime.recipe))
-  }
+  return listEnvironmentRecipeRuntimes(deps, repoId)
 }
 
 export function provisionEnvironmentRecipeForRpc(
@@ -101,7 +98,6 @@ export function provisionEnvironmentRecipeForRpc(
     params,
     async () => {
       const repo = requireEnvironmentRecipeRepo(deps.runtime, params.repoId)
-      const recipe = await requireEnvironmentRecipe(repo, params.recipeId, deps.getPluginRecipes)
       const runtimeId = environmentRecipeMutationRuntimeId(
         deps.userDataPath,
         deps.pairedDeviceId,
@@ -110,8 +106,33 @@ export function provisionEnvironmentRecipeForRpc(
       const existing = listEphemeralVmRuntimes(deps.userDataPath).find(
         (runtime) => runtime.id === runtimeId
       )
+      if (existing?.operatorRecipeCatalogSha256 && !deps.operatorRecipeCatalog) {
+        throw new EnvironmentRecipeRpcError(
+          'environment_recipe_not_found',
+          'Recipe-created runtime requires its operator catalog.'
+        )
+      }
+      const recipe = await requireEnvironmentRecipe(
+        repo,
+        params.recipeId,
+        deps.getPluginRecipes,
+        deps.operatorRecipeCatalog
+      )
       if (existing) {
         requireEnvironmentRecipeRuntimeScope(existing, params)
+        if (
+          deps.operatorRecipeCatalog &&
+          !isRuntimeBoundToOperatorRecipe(
+            existing,
+            recipe,
+            deps.operatorRecipeCatalog.status.digest
+          )
+        ) {
+          throw new EnvironmentRecipeRpcError(
+            'environment_recipe_not_found',
+            'Recipe-created runtime is not bound to the active operator catalog.'
+          )
+        }
         if (existing.status === 'cleaned' || existing.status === 'cleanup_failed') {
           throw new EnvironmentRecipeRpcError(
             'environment_recipe_conflict',
@@ -135,7 +156,9 @@ export function provisionEnvironmentRecipeForRpc(
         workspaceId: params.workspaceId,
         workspaceName: params.workspaceName,
         branch: params.branch,
-        ref: params.ref
+        ref: params.ref,
+        executionMode: deps.operatorRecipeCatalog ? 'direct' : 'shell',
+        operatorRecipeCatalogSha256: deps.operatorRecipeCatalog?.status.digest
       })
       if (!provisioned.ok) {
         throw failedOperation('Provision', provisioned.start.error)
@@ -167,7 +190,9 @@ export function suspendEnvironmentRecipeForRpc(
           userDataPath: deps.userDataPath,
           repoPath: repo.path,
           recipe,
-          runtimeId: runtime.id
+          runtimeId: runtime.id,
+          executionMode: deps.operatorRecipeCatalog ? 'direct' : 'shell',
+          operatorRecipeCatalogSha256: deps.operatorRecipeCatalog?.status.digest
         })
         if (!suspended.ok) {
           throw failedOperation('Suspend', suspended.error)
@@ -203,7 +228,9 @@ export function resumeEnvironmentRecipeForRpc(
           userDataPath: deps.userDataPath,
           repoPath: repo.path,
           recipe,
-          runtimeId: runtime.id
+          runtimeId: runtime.id,
+          executionMode: deps.operatorRecipeCatalog ? 'direct' : 'shell',
+          operatorRecipeCatalogSha256: deps.operatorRecipeCatalog?.status.digest
         })
         if (!resumed.ok) {
           throw failedOperation('Resume', resumed.error)
@@ -235,7 +262,9 @@ export function destroyEnvironmentRecipeForRpc(
           userDataPath: deps.userDataPath,
           repoPath: repo.path,
           recipe,
-          runtimeId: runtime.id
+          runtimeId: runtime.id,
+          executionMode: deps.operatorRecipeCatalog ? 'direct' : 'shell',
+          operatorRecipeCatalogSha256: deps.operatorRecipeCatalog?.status.digest
         })
         if (cleanup.ok && runtime.runtimeEnvironmentId) {
           try {
@@ -262,9 +291,7 @@ export function destroyEnvironmentRecipeForRpc(
   )
 }
 
-export function resetEnvironmentRecipeRpcStateForTests(): void {
-  resetEnvironmentRecipeOperationControlForTests()
-}
+export const resetEnvironmentRecipeRpcStateForTests = resetRpcState
 
 function invalidLifecycleState(action: string, status: string): EnvironmentRecipeRpcError {
   return new EnvironmentRecipeRpcError(

@@ -25,23 +25,32 @@ import { recordRuntimeFeatureInteraction } from './runtime-feature-interaction'
 import { OrchestrationLegacyCompatibility } from './orchestration-legacy-compatibility'
 import type { RpcDispatchStreamingOptions } from './dispatcher-stream-options'
 import { invalidArgumentResponse, mapDispatcherError } from './dispatcher-error-response'
+import type { OperatorEnvironmentRecipeCatalog } from '../../operator-environment-recipe-catalog'
 
 export type DispatcherOptions = {
   runtime: OrcaRuntimeService
   methods?: readonly RpcAnyMethod[]
   userDataPath?: string
+  operatorRecipeCatalog?: OperatorEnvironmentRecipeCatalog
 }
 
 export class RpcDispatcher {
   private readonly runtime: OrcaRuntimeService
   private readonly registry: RpcRegistry
   private readonly userDataPath: string | undefined
+  private readonly operatorRecipeCatalog: OperatorEnvironmentRecipeCatalog | undefined
   private readonly orchestrationMutations: OrchestrationMutationExecutor
   private readonly legacyOrchestration: OrchestrationLegacyCompatibility
 
-  constructor({ runtime, methods = ALL_RPC_METHODS, userDataPath }: DispatcherOptions) {
+  constructor({
+    runtime,
+    methods = ALL_RPC_METHODS,
+    userDataPath,
+    operatorRecipeCatalog
+  }: DispatcherOptions) {
     this.runtime = runtime
     this.userDataPath = userDataPath
+    this.operatorRecipeCatalog = operatorRecipeCatalog
     this.registry = buildRegistry(methods)
     this.orchestrationMutations = getOrchestrationMutationExecutor(runtime)
     this.legacyOrchestration = new OrchestrationLegacyCompatibility(runtime)
@@ -99,6 +108,7 @@ export class RpcDispatcher {
         const legacyCoordinatorRunId = legacyCoordinator?.revalidate()
         return method.handler(effectiveParams, {
           runtime: this.runtime,
+          operatorRecipeCatalog: this.operatorRecipeCatalog,
           userDataPath: this.userDataPath,
           signal: options?.signal,
           requestId: request.id,
@@ -188,6 +198,7 @@ export class RpcDispatcher {
           const legacyCoordinatorRunId = legacyCoordinator?.revalidate()
           return method.handler(effectiveParams, {
             runtime: this.runtime,
+            operatorRecipeCatalog: this.operatorRecipeCatalog,
             userDataPath: this.userDataPath,
             signal: options?.signal,
             requestId: request.id,
@@ -251,6 +262,7 @@ export class RpcDispatcher {
         parsedParams.value,
         {
           runtime: this.runtime,
+          operatorRecipeCatalog: this.operatorRecipeCatalog,
           userDataPath: this.userDataPath,
           signal: options?.signal,
           requestId: request.id,

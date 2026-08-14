@@ -103,6 +103,9 @@ export function getRuntimeRecipeContext(
   if (!runtime) {
     throw new Error(`Unknown ephemeral VM runtime: ${runtimeId}`)
   }
+  if (runtime.operatorRecipeCatalogSha256) {
+    throw new Error('Operator-managed ephemeral VM runtime is unavailable.')
+  }
   if (!runtime.repoId) {
     throw new Error(`Ephemeral VM runtime has no repo id: ${runtimeId}`)
   }

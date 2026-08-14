@@ -6,7 +6,7 @@ export const SERVE_COMMAND_SPECS: CommandSpec[] = [
     path: ['serve'],
     summary: 'Start an Orca runtime server without opening a desktop window',
     usage:
-      'orca serve [--port <port>] [--pairing-address <host>] [--mobile-pairing] [--no-pairing] [--project-root <path>] [--recipe-json] [--json]',
+      'orca serve [--port <port>] [--pairing-address <host>] [--mobile-pairing] [--no-pairing] [--project-root <path>] [--recipe-json] [--operator-recipe-catalog <absolute-json>] [--operator-recipe-catalog-sha256 <digest>] [--json]',
     allowedFlags: [
       ...GLOBAL_FLAGS,
       'port',
@@ -14,13 +14,16 @@ export const SERVE_COMMAND_SPECS: CommandSpec[] = [
       'mobile-pairing',
       'no-pairing',
       'project-root',
-      'recipe-json'
+      'recipe-json',
+      'operator-recipe-catalog',
+      'operator-recipe-catalog-sha256'
     ],
     notes: [
       'Runs in the foreground and prints the bound endpoint, advertised endpoint, and pairing status. Stop it with Ctrl+C.',
       '--pairing-address changes only the client-advertised address; use a reachable LAN, Tailscale, SSH-forward, or reverse-proxy endpoint.',
       'Use --recipe-json with --project-root from VM recipes to print the recipe result JSON and leave the server running.',
       'Use --mobile-pairing to print a mobile-scoped pairing QR/link instead of the default runtime-environment pairing link.',
+      'Operator recipe catalogs require both catalog flags and --no-pairing; they cannot be combined with mobile pairing, recipe JSON, or --project-root.',
       'When the web client bundle is available, the server also prints a browser URL with the pairing data embedded.'
     ],
     examples: [

@@ -391,6 +391,44 @@ describe('serveOrcaApp', () => {
     )
   })
 
+  it('forwards operator catalog arguments as exact child argv tokens', async () => {
+    const child = {
+      kill: vi.fn(),
+      once: vi.fn(
+        (event: string, handler: (code: number | null, signal: string | null) => void) => {
+          if (event === 'exit') {
+            queueMicrotask(() => handler(0, null))
+          }
+          return child
+        }
+      )
+    }
+    spawnMock.mockReturnValue(child)
+    const digest = 'a'.repeat(64)
+
+    await expect(
+      serveOrcaApp({
+        noPairing: true,
+        operatorRecipeCatalogPath: '/etc/orca/catalog with spaces.json',
+        operatorRecipeCatalogSha256: digest
+      })
+    ).resolves.toBe(0)
+
+    expect(spawnMock).toHaveBeenCalledWith(
+      '/Applications/Orca.app/Contents/MacOS/Orca',
+      [
+        '--serve',
+        '--serve-no-pairing',
+        '--serve-operator-recipe-catalog',
+        '/etc/orca/catalog with spaces.json',
+        '--serve-operator-recipe-catalog-sha256',
+        digest
+      ],
+      expect.any(Object)
+    )
+    expect(spawnMock.mock.calls[0]?.[2]).not.toHaveProperty('shell')
+  })
+
   it('preserves an AppImage no-sandbox launch for the server child', async () => {
     process.env.ORCA_APPIMAGE_NO_SANDBOX = '1'
     const child = {

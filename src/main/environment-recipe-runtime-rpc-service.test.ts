@@ -11,6 +11,7 @@ import {
   upsertEphemeralVmRuntime
 } from '../shared/ephemeral-vm-runtime-store'
 import type { EphemeralVmRuntimeRecord } from '../shared/ephemeral-vm-runtimes'
+import type { OperatorEnvironmentRecipeCatalog } from './operator-environment-recipe-catalog'
 
 const mocks = vi.hoisted(() => ({
   provision: vi.fn(),
@@ -59,6 +60,18 @@ const recipe: OrcaVmRecipe = {
 }
 
 const TEST_HOST_FINGERPRINT = `SHA256:${'A'.repeat(43)}`
+const operatorRecipe: OrcaVmRecipe = {
+  ...recipe,
+  create: '/operator/create',
+  suspend: '/operator/suspend',
+  resume: '/operator/resume',
+  destroy: '/operator/destroy'
+}
+const operatorRecipeCatalog: OperatorEnvironmentRecipeCatalog = {
+  status: { enabled: true, digest: 'a'.repeat(64), recipeIds: [operatorRecipe.id] },
+  listRecipes: () => [operatorRecipe],
+  resolveRecipe: (id) => (id === operatorRecipe.id ? operatorRecipe : null)
+}
 
 let userDataPath: string
 
@@ -146,7 +159,7 @@ describe('remote environment recipe runtime service', () => {
       runningRuntime({ id: 'runtime-cleaned', status: 'cleaned' })
     )
 
-    const result = await listEnvironmentRecipeRuntimesForRpc(deps(), 'repo-1')
+    const result = listEnvironmentRecipeRuntimesForRpc(deps(), 'repo-1')
 
     expect(result.runtimes).toHaveLength(1)
     expect(result.runtimes[0]).toMatchObject({ runtimeId: 'runtime-existing', status: 'running' })
@@ -245,6 +258,125 @@ describe('remote environment recipe runtime service', () => {
     })
     expect(JSON.stringify(first)).not.toContain('secret')
     expect(JSON.stringify(first)).not.toContain(TEST_HOST_FINGERPRINT)
+  })
+
+  it('uses operator executables while preserving the selected target repo, remote, and ref', async () => {
+    const operatorDeps = { ...deps(), operatorRecipeCatalog }
+    mocks.provision.mockImplementation(async (args: { runtimeId: string }) => {
+      const runtime = upsertEphemeralVmRuntime(
+        userDataPath,
+        runningRuntime({
+          id: args.runtimeId,
+          recipe: operatorRecipe,
+          operatorRecipeCatalogSha256: operatorRecipeCatalog.status.digest,
+          sshTargetId: undefined
+        })
+      )
+      return {
+        ok: true,
+        runtime,
+        start: { ok: true, context: {}, result: runtime.recipeResult, stdout: '', stderr: '' }
+      }
+    })
+
+    const params = {
+      repoId: 'repo-1',
+      recipeId: operatorRecipe.id,
+      clientMutationId: 'operator-provision',
+      projectId: 'project-1',
+      workspaceId: 'workspace-1',
+      workspaceName: 'Workspace One',
+      branch: 'feature/operator',
+      ref: 'refs/heads/feature/operator'
+    }
+    await provisionEnvironmentRecipeForRpc(operatorDeps, params)
+
+    expect(mocks.provision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        repoId: 'repo-1',
+        repoPath: '/host/source-repo',
+        repoUrl: 'git@github.com:stablyai/orca.git',
+        recipe: operatorRecipe,
+        executionMode: 'direct',
+        operatorRecipeCatalogSha256: operatorRecipeCatalog.status.digest,
+        projectId: 'project-1',
+        workspaceId: 'workspace-1',
+        workspaceName: 'Workspace One',
+        branch: 'feature/operator',
+        ref: 'refs/heads/feature/operator'
+      })
+    )
+
+    resetEnvironmentRecipeRpcStateForTests()
+    await expect(provisionEnvironmentRecipeForRpc(deps(), params)).rejects.toMatchObject({
+      code: 'environment_recipe_not_found'
+    })
+    expect(mocks.provision).toHaveBeenCalledOnce()
+  })
+
+  it('hides operator-bound runtimes without the exact active catalog identity', () => {
+    upsertEphemeralVmRuntime(
+      userDataPath,
+      runningRuntime({
+        recipe: operatorRecipe,
+        operatorRecipeCatalogSha256: operatorRecipeCatalog.status.digest
+      })
+    )
+
+    expect(listEnvironmentRecipeRuntimesForRpc(deps(), 'repo-1').runtimes).toEqual([])
+    expect(
+      listEnvironmentRecipeRuntimesForRpc({ ...deps(), operatorRecipeCatalog }, 'repo-1').runtimes
+    ).toHaveLength(1)
+    expect(
+      listEnvironmentRecipeRuntimesForRpc(
+        {
+          ...deps(),
+          operatorRecipeCatalog: {
+            ...operatorRecipeCatalog,
+            status: { ...operatorRecipeCatalog.status, digest: 'b'.repeat(64) }
+          }
+        },
+        'repo-1'
+      ).runtimes
+    ).toEqual([])
+  })
+
+  it('keeps operator connection-failure cleanup descriptor-direct and identity-bound', async () => {
+    mocks.connectSsh.mockRejectedValueOnce(new Error('connection failed'))
+    mocks.cleanup.mockResolvedValue({ ok: true, skipped: false })
+    mocks.provision.mockImplementation(async (args: { runtimeId: string }) => {
+      const runtime = upsertEphemeralVmRuntime(
+        userDataPath,
+        runningRuntime({
+          id: args.runtimeId,
+          recipe: operatorRecipe,
+          operatorRecipeCatalogSha256: operatorRecipeCatalog.status.digest,
+          sshTargetId: undefined
+        })
+      )
+      return {
+        ok: true,
+        runtime,
+        start: { ok: true, context: {}, result: runtime.recipeResult, stdout: '', stderr: '' }
+      }
+    })
+
+    await expect(
+      provisionEnvironmentRecipeForRpc(
+        { ...deps(), operatorRecipeCatalog },
+        {
+          repoId: 'repo-1',
+          recipeId: operatorRecipe.id,
+          clientMutationId: 'operator-connect-failure'
+        }
+      )
+    ).rejects.toMatchObject({ code: 'environment_recipe_failed' })
+    expect(mocks.cleanup).toHaveBeenCalledWith(
+      expect.objectContaining({
+        executionMode: 'direct',
+        operatorRecipeCatalogSha256: operatorRecipeCatalog.status.digest
+      })
+    )
   })
 
   it('bounds unexpected host failures without returning provider output', async () => {

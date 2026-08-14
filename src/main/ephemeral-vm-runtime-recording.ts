@@ -15,6 +15,8 @@ type ProvisionedRuntimeRecordingArgs = {
   projectId?: string
   workspaceId?: string
   workspaceName?: string
+  executionMode?: 'shell' | 'direct'
+  operatorRecipeCatalogSha256?: string
 }
 
 export async function recordProvisionedEphemeralVmRuntime(
@@ -28,6 +30,9 @@ export async function recordProvisionedEphemeralVmRuntime(
       id: start.context.instanceId ?? start.context.recipeId,
       recipeId: args.recipe.id,
       recipe: args.recipe,
+      ...(args.operatorRecipeCatalogSha256
+        ? { operatorRecipeCatalogSha256: args.operatorRecipeCatalogSha256 }
+        : {}),
       ...(args.repoId ? { repoId: args.repoId } : {}),
       ...(args.projectId ? { projectId: args.projectId } : {}),
       ...(args.workspaceId ? { workspaceId: args.workspaceId } : {}),
@@ -44,6 +49,7 @@ export async function recordProvisionedEphemeralVmRuntime(
     await runEphemeralVmRecipeCleanup({
       repoPath: args.repoPath,
       recipe: args.recipe,
+      executionMode: args.executionMode,
       context: start.context,
       recipeResult: start.result
     }).catch(() => undefined)

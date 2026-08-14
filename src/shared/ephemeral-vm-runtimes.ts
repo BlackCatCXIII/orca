@@ -47,6 +47,10 @@ export const EphemeralVmRuntimeRecordSchema = z.object({
   /** Immutable lifecycle commands used for this runtime even if its source
    * pack is updated, disabled, or removed later. */
   recipe: EphemeralVmRuntimeRecipeSchema.optional(),
+  operatorRecipeCatalogSha256: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/)
+    .optional(),
   repoId: z.string().min(1).optional(),
   projectId: z.string().min(1).optional(),
   workspaceId: z.string().min(1).optional(),

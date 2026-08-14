@@ -420,6 +420,23 @@ describe('SshConnection', () => {
     expect(conn.getHostKeyFingerprint()).toBe(formatOpenSshSha256Fingerprint(negotiatedHostKey))
   })
 
+  it('fails closed when force-system transport is requested for a pinned target', async () => {
+    vi.stubEnv('ORCA_SSH_FORCE_SYSTEM_TRANSPORT', '1')
+    const conn = new SshConnection(
+      createTarget({
+        hostKey: {
+          type: 'sha256',
+          fingerprint: formatOpenSshSha256Fingerprint(negotiatedHostKey)
+        }
+      }),
+      createCallbacks()
+    )
+
+    await expect(conn.connect()).rejects.toThrow(/verified in-process SSH transport/)
+    expect(clientInstances).toHaveLength(0)
+    expect(spawnSystemSshCommandMock).not.toHaveBeenCalled()
+  })
+
   it('rejects a host-key mismatch before credentials, exec, or SFTP', async () => {
     const onCredentialRequest = vi.fn()
     const conn = new SshConnection(
@@ -2045,6 +2062,26 @@ describe('SshConnection', () => {
       'echo ORCA-SYSTEM-SSH-OK',
       { wrapCommand: false }
     )
+  })
+
+  it('never reactively falls back to system SSH for a pinned target', async () => {
+    connectBehavior = 'error'
+    connectErrorMessage = 'connect EHOSTUNREACH 192.168.0.210:22 - Local (192.168.0.2:52112)'
+    connectErrorCode = 'EHOSTUNREACH'
+    const conn = new SshConnection(
+      createTarget({
+        host: '192.168.0.210',
+        hostKey: {
+          type: 'sha256',
+          fingerprint: formatOpenSshSha256Fingerprint(negotiatedHostKey)
+        }
+      }),
+      createCallbacks()
+    )
+
+    await expect(conn.connect()).rejects.toThrow(/EHOSTUNREACH/)
+    expect(conn.usesSystemSshTransport()).toBe(false)
+    expect(spawnSystemSshCommandMock).not.toHaveBeenCalled()
   })
 
   it('keeps the original ssh2 reachability error when the system SSH probe fails', async () => {

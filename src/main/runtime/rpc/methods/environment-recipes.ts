@@ -55,7 +55,8 @@ function dependencies(context: RpcContext): EnvironmentRecipeRuntimeRpcDependenc
     runtime: context.runtime,
     userDataPath: context.userDataPath,
     pairedDeviceId: context.pairedDeviceId,
-    getPluginRecipes: getApprovedPluginVmRecipesForRpc
+    getPluginRecipes: getApprovedPluginVmRecipesForRpc,
+    operatorRecipeCatalog: context.operatorRecipeCatalog
   }
 }
 

@@ -10,6 +10,7 @@ import type {
 } from '../../../shared/mobile-relay-credential-contract'
 import type { RuntimeCapability } from '../../../shared/protocol-version'
 import type { OrchestrationCompatibilityEvidence } from '../../../shared/orchestration-compatibility-evidence'
+import type { OperatorEnvironmentRecipeCatalog } from '../../operator-environment-recipe-catalog'
 
 export type PairingRpcContext = {
   getEndpoints(params: PairingGetEndpointsParams): Promise<PairingGetEndpointsResult>
@@ -63,6 +64,7 @@ export type LegacyCoordinatorAuthorityProof = Readonly<{
 
 export type RpcContext = {
   runtime: OrcaRuntimeService
+  operatorRecipeCatalog?: OperatorEnvironmentRecipeCatalog
   // Why: durable RPC state must use the authenticated host's storage, never a client path.
   userDataPath?: string
   // Why: lets long-poll handlers release immediately on client disconnect instead of running down timeoutMs. See design doc §3.1.

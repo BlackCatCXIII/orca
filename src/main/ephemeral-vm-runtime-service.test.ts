@@ -10,7 +10,8 @@ import {
 import {
   cleanupEphemeralVmRuntime,
   provisionEphemeralVmRuntime,
-  resumeEphemeralVmRuntime
+  resumeEphemeralVmRuntime,
+  suspendEphemeralVmRuntime
 } from './ephemeral-vm-runtime-service'
 import type { OrcaVmRecipe } from '../shared/orca-yaml-hook-types'
 
@@ -179,6 +180,55 @@ describe('ephemeral VM runtime service', () => {
       }
     })
     expect(listEphemeralVmRuntimes(userDataPath)).toEqual([])
+  })
+
+  it('requires exact operator identity and direct mode for every stored lifecycle', async () => {
+    const userDataPath = makeDir('orca-operator-runtime-authority-')
+    const recipe: OrcaVmRecipe = {
+      id: 'operator-box',
+      name: 'Operator box',
+      create: '/operator/create',
+      destroyDisabled: true
+    }
+    upsertEphemeralVmRuntime(userDataPath, {
+      id: 'operator-runtime',
+      recipeId: recipe.id,
+      recipe,
+      operatorRecipeCatalogSha256: 'a'.repeat(64),
+      status: 'suspended',
+      cleanupStatus: 'disabled',
+      cleanupDisabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+      recipeResult: {
+        schemaVersion: 1,
+        pairingCode: makePairingCode(),
+        projectRoot: '/workspace/repo'
+      }
+    })
+    const args = {
+      userDataPath,
+      repoPath: makeDir('orca-operator-target-repo-'),
+      recipe,
+      runtimeId: 'operator-runtime'
+    }
+
+    await expect(cleanupEphemeralVmRuntime(args)).rejects.toThrow(/unavailable/)
+    await expect(suspendEphemeralVmRuntime(args)).rejects.toThrow(/unavailable/)
+    await expect(
+      resumeEphemeralVmRuntime({
+        ...args,
+        executionMode: 'direct',
+        operatorRecipeCatalogSha256: 'b'.repeat(64)
+      })
+    ).rejects.toThrow(/unavailable/)
+    await expect(
+      cleanupEphemeralVmRuntime({
+        ...args,
+        executionMode: 'direct',
+        operatorRecipeCatalogSha256: 'a'.repeat(64)
+      })
+    ).resolves.toMatchObject({ ok: true, skipped: true })
   })
 
   it('destroys a provisioned resource when the runtime record cannot be persisted', async () => {

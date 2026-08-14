@@ -22,6 +22,7 @@ export function quoteShellToken(value: string): string {
 
 export async function runRecipeCommand(args: {
   command: string
+  executionMode?: 'shell' | 'direct'
   repoPath: string
   context: EphemeralVmRecipeContext
   mode: 'create' | 'suspend' | 'resume' | 'destroy'
@@ -40,13 +41,18 @@ export async function runRecipeCommand(args: {
   return new Promise((resolve, reject) => {
     let child: ChildProcessWithoutNullStreams
     try {
-      child = spawnCommand(args.command, {
+      const options = {
         cwd: args.repoPath,
         detached: process.platform !== 'win32',
         env: buildRecipeEnv(args.env, args.mode, args.context, args.resultSchemaVersion),
-        shell: true,
+        shell: args.executionMode !== 'direct',
         windowsHide: true
-      }) as ChildProcessWithoutNullStreams
+      }
+      child = (
+        args.executionMode === 'direct'
+          ? spawnCommand(args.command, [], options)
+          : spawnCommand(args.command, options)
+      ) as ChildProcessWithoutNullStreams
     } catch (error) {
       reject(error)
       return
@@ -111,7 +117,7 @@ function killRecipeProcess(child: ChildProcessWithoutNullStreams): void {
   }
   if (child.pid) {
     try {
-      // Recipes run through a shell; kill the process group so shell children do not linger.
+      // The detached recipe owns its process group, including any provider children.
       process.kill(-child.pid, 'SIGTERM')
       return
     } catch {

@@ -39,6 +39,7 @@ import type { RemoteServerUpdateSupport } from './remote-server-update'
 import type { ExecutionHostId } from './execution-host'
 import type { PtyIncarnationId } from './pty-incarnation'
 import type { RasterImageDimensions } from './raster-image-dimensions'
+import type { OperatorRecipeCatalogStatus } from './operator-recipe-catalog-status'
 
 export type { RuntimeMarkdownReadTabResult, RuntimeMarkdownSaveTabResult }
 
@@ -90,6 +91,7 @@ export type RuntimeStatus = {
   // Why: mobile gates its Floating Workspace entry on this; absent on older
   // hosts, false when the user disabled the feature in desktop settings.
   floatingWorkspaceEnabled?: boolean
+  operatorRecipeCatalog?: OperatorRecipeCatalogStatus
   // COMPAT(runtimeStatusMobileAliases): added 2026-05-15 for mobile builds
   // that still read these names; new desktop/CLI code uses the fields above.
   protocolVersion?: number
@@ -116,6 +118,7 @@ export type CliStatusResult = {
     appVersion?: string
     remoteUpdateSupport?: RemoteServerUpdateSupport
     capabilities?: RuntimeCapability[]
+    operatorRecipeCatalog?: OperatorRecipeCatalogStatus
   }
   graph: {
     state: RuntimeGraphStatus | 'not_running' | 'starting'

@@ -13,6 +13,7 @@ import { validateCandidateWorkflow } from './candidate-artifact-workflow-policy.
 
 const workflowPath = resolve('.github/workflows/candidate-artifacts.yml')
 const policyPath = resolve('config/candidate-artifacts.json')
+const supportRevision = 'f910c801aac823bb1b0768e79d1b3c865db295ac'
 const require = createRequire(import.meta.url)
 
 async function fixture() {
@@ -55,6 +56,16 @@ async function createHermeticSource(directory, policy) {
 test('accepts the candidate workflow', async () => {
   const { workflow, policy } = await fixture()
   expect(() => validateCandidateWorkflow(workflow, policy)).not.toThrow()
+})
+
+test('keeps candidate runtime source distinct from the integrated support contract', async () => {
+  const { policy } = await fixture()
+  const documentation = await readFile(resolve('.github/CANDIDATE_ARTIFACTS.md'), 'utf8')
+
+  expect(policy.sourceRevision).toBe('338bd227c12067ace0661d95f66ae4ecb5223a68')
+  expect(policy.sourceRevision).not.toBe(supportRevision)
+  expect(documentation).toContain(policy.sourceRevision)
+  expect(documentation).toContain(supportRevision)
 })
 
 /** @type {Array<[string, (workflow: any) => void]>} */

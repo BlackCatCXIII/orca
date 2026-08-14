@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orca://contracts/environment-recipes/operator-catalog/v1/schema.json",
+  "title": "Orca headless operator environment-recipe catalog v1",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "recipes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": {
+        "$ref": "#/$defs/recipe"
+      }
+    }
+  },
+  "required": ["schemaVersion", "recipes"],
+  "additionalProperties": false,
+  "$defs": {
+    "script": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": ["path", "sha256"],
+      "additionalProperties": false
+    },
+    "lifecycle": {
+      "type": "object",
+      "properties": {
+        "create": {
+          "$ref": "#/$defs/script"
+        },
+        "suspend": {
+          "$ref": "#/$defs/script"
+        },
+        "resume": {
+          "$ref": "#/$defs/script"
+        },
+        "destroy": {
+          "$ref": "#/$defs/script"
+        }
+      },
+      "required": ["create"],
+      "additionalProperties": false
+    },
+    "recipe": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "checkoutMode": {
+          "const": "provisioned-root"
+        },
+        "lifecycle": {
+          "$ref": "#/$defs/lifecycle"
+        }
+      },
+      "required": ["id", "name", "checkoutMode", "lifecycle"],
+      "additionalProperties": false
+    }
+  }
+}

@@ -49,12 +49,15 @@ export function registerEphemeralVmRuntimeHandlers(store: Store): void {
   ipcMain.removeHandler('ephemeralVm:getCleanupCommand')
 
   ipcMain.handle('ephemeralVm:listRuntimes', (): EphemeralVmRuntimeRecord[] => {
-    return listEphemeralVmRuntimes(app.getPath('userData'))
+    return listEphemeralVmRuntimes(app.getPath('userData')).filter(
+      (runtime) => !runtime.operatorRecipeCatalogSha256
+    )
   })
 
   ipcMain.handle(
     'ephemeralVm:attachWorkspace',
     (_event, args: { runtimeId: string; workspaceId: string }): EphemeralVmRuntimeRecord => {
+      rejectOperatorRuntime(app.getPath('userData'), args.runtimeId)
       return attachEphemeralVmRuntimeToWorkspace({
         userDataPath: app.getPath('userData'),
         runtimeId: args.runtimeId,
@@ -73,6 +76,7 @@ export function registerEphemeralVmRuntimeHandlers(store: Store): void {
       if (!runtime) {
         throw new Error(`Unknown ephemeral VM runtime: ${args.runtimeId}`)
       }
+      rejectOperatorRuntime(userDataPath, runtime.id)
       if (!runtime.repoId) {
         throw new Error(`Ephemeral VM runtime has no repo id: ${args.runtimeId}`)
       }
@@ -131,6 +135,9 @@ export function registerEphemeralVmRuntimeHandlers(store: Store): void {
           entry.status !== 'cleaned' &&
           entry.status !== 'cleanup_pending'
       )
+      if (runtime?.operatorRecipeCatalogSha256) {
+        throw new Error('Operator-managed ephemeral VM runtime is unavailable.')
+      }
       if (!runtime?.repoId) {
         return null
       }
@@ -167,6 +174,9 @@ export function registerEphemeralVmRuntimeHandlers(store: Store): void {
           entry.status !== 'cleaned' &&
           entry.status !== 'cleanup_pending'
       )
+      if (runtime?.operatorRecipeCatalogSha256) {
+        throw new Error('Operator-managed ephemeral VM runtime is unavailable.')
+      }
       if (!runtime?.repoId) {
         return null
       }
@@ -253,4 +263,11 @@ export function registerEphemeralVmRuntimeHandlers(store: Store): void {
       }
     }
   )
+}
+
+function rejectOperatorRuntime(userDataPath: string, runtimeId: string): void {
+  const runtime = listEphemeralVmRuntimes(userDataPath).find((entry) => entry.id === runtimeId)
+  if (runtime?.operatorRecipeCatalogSha256) {
+    throw new Error('Operator-managed ephemeral VM runtime is unavailable.')
+  }
 }

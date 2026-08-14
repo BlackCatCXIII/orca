@@ -29,6 +29,9 @@ export async function cleanupFailedEphemeralVmStart(
     id: start.context.instanceId ?? start.context.recipeId,
     recipeId: args.recipe.id,
     recipe: args.recipe,
+    ...(args.operatorRecipeCatalogSha256
+      ? { operatorRecipeCatalogSha256: args.operatorRecipeCatalogSha256 }
+      : {}),
     ...(args.repoId ? { repoId: args.repoId } : {}),
     ...(args.projectId ? { projectId: args.projectId } : {}),
     ...(args.workspaceId ? { workspaceId: args.workspaceId } : {}),
@@ -53,6 +56,7 @@ async function getCleanupError(
     const cleanup = await runEphemeralVmRecipeCleanup({
       repoPath: args.repoPath,
       recipe: args.recipe,
+      executionMode: args.executionMode,
       context: start.context,
       recipeResult: start.recipeResult,
       signal: args.signal,

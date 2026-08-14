@@ -58,11 +58,19 @@ export const BOOLEAN_FLAGS = new Set([
 
 export const REPEATED_FLAG_SEPARATOR = '\u0000'
 const REPEATABLE_STRING_FLAGS = new Set(['label', 'skill'])
+const REJECT_DUPLICATE_STRING_FLAGS = new Set([
+  'operator-recipe-catalog',
+  'operator-recipe-catalog-sha256'
+])
 
 function setFlagValue(flags: Map<string, string | boolean>, name: string, value: string): void {
   const existing = flags.get(name)
   if (typeof existing === 'string' && REPEATABLE_STRING_FLAGS.has(name)) {
     flags.set(name, `${existing}${REPEATED_FLAG_SEPARATOR}${value}`)
+    return
+  }
+  if (existing !== undefined && REJECT_DUPLICATE_STRING_FLAGS.has(name)) {
+    flags.set(name, `${String(existing)}${REPEATED_FLAG_SEPARATOR}${value}`)
     return
   }
   flags.set(name, value)

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -23,6 +23,31 @@ function nodeCommand(scriptPath: string): string {
 }
 
 describe('runRecipeCommand', () => {
+  it.skipIf(process.platform === 'win32')(
+    'executes an operator script directly with no shell or argument expansion',
+    async () => {
+      const repoPath = makeRepo()
+      const scriptPath = join(repoPath, 'operator-script')
+      writeFileSync(
+        scriptPath,
+        `#!${process.execPath}\nprocess.stdout.write(JSON.stringify(process.argv.slice(1)))\n`
+      )
+      chmodSync(scriptPath, 0o755)
+
+      const result = await runRecipeCommand({
+        command: scriptPath,
+        executionMode: 'direct',
+        repoPath,
+        mode: 'create',
+        resultSchemaVersion: 2,
+        context: { recipeId: 'operator', repoPath }
+      })
+
+      expect(result.exitCode).toBe(0)
+      expect(JSON.parse(result.stdout)).toEqual([scriptPath])
+    }
+  )
+
   it.each([
     { output: 'abcdef', maxCaptureBytes: 4, expected: 'cdef' },
     { output: 'A😀B', maxCaptureBytes: 5, expected: '😀B' },

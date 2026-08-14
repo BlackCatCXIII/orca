@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   argvRequestsServeMode,
   findServeSubcommandIndex,
-  normalizeServeModeArgv
+  normalizeServeModeArgv,
+  readOperatorRecipeCatalogServeFlags
 } from './serve-mode-argv'
 
 describe('serve-mode-argv', () => {
@@ -107,6 +108,29 @@ describe('serve-mode-argv', () => {
     ])
   })
 
+  it('forwards operator catalog values without shell reinterpretation', () => {
+    const digest = 'a'.repeat(64)
+    expect(
+      normalizeServeModeArgv([
+        '/AppRun',
+        'serve',
+        '--no-pairing',
+        '--operator-recipe-catalog',
+        '/etc/orca/catalog with spaces.json',
+        '--operator-recipe-catalog-sha256',
+        digest
+      ])
+    ).toEqual([
+      '/AppRun',
+      '--serve',
+      '--serve-no-pairing',
+      '--serve-operator-recipe-catalog',
+      '/etc/orca/catalog with spaces.json',
+      '--serve-operator-recipe-catalog-sha256',
+      digest
+    ])
+  })
+
   it('leaves already-normalized argv unchanged', () => {
     // Why every value flag: the CLI's own `orca serve` spawns the app with exactly this shape
     // (serveOrcaApp), and the rewrite now runs over it too — a bad mapping would drop the port here.
@@ -122,9 +146,68 @@ describe('serve-mode-argv', () => {
       '--serve-mobile-pairing',
       '--serve-recipe-json',
       '--serve-project-root',
-      '/srv/repo'
+      '/srv/repo',
+      '--serve-operator-recipe-catalog',
+      '/etc/orca/catalog.json',
+      '--serve-operator-recipe-catalog-sha256',
+      'a'.repeat(64)
     ]
     expect(normalizeServeModeArgv(argv)).toEqual(argv)
+  })
+
+  it('rejects duplicate catalog identity flags after CLI rewrite or direct startup', () => {
+    expect(() =>
+      readOperatorRecipeCatalogServeFlags([
+        'orca',
+        '--serve',
+        '--serve-operator-recipe-catalog',
+        '/one.json',
+        '--serve-operator-recipe-catalog',
+        '/two.json'
+      ])
+    ).toThrow(/must not be repeated/)
+    expect(() =>
+      readOperatorRecipeCatalogServeFlags(
+        normalizeServeModeArgv([
+          'orca',
+          'serve',
+          '--operator-recipe-catalog-sha256',
+          'a'.repeat(64),
+          '--operator-recipe-catalog-sha256',
+          'b'.repeat(64)
+        ])
+      )
+    ).toThrow(/must not be repeated/)
+  })
+
+  it('accepts one direct Chromium equals value per catalog identity flag', () => {
+    expect(
+      readOperatorRecipeCatalogServeFlags([
+        'orca',
+        '--serve',
+        '--serve-operator-recipe-catalog=/etc/orca/catalog.json',
+        `--serve-operator-recipe-catalog-sha256=${'a'.repeat(64)}`
+      ])
+    ).toEqual({ path: '/etc/orca/catalog.json', sha256: 'a'.repeat(64) })
+  })
+
+  it.each([
+    [
+      'empty equals value',
+      ['--serve-operator-recipe-catalog=', '--serve-operator-recipe-catalog-sha256=a']
+    ],
+    ['missing digest', ['--serve-operator-recipe-catalog=/etc/orca/catalog.json']],
+    [
+      'mixed duplicate',
+      [
+        '--serve-operator-recipe-catalog=/etc/orca/one.json',
+        '--serve-operator-recipe-catalog',
+        '/etc/orca/two.json',
+        `--serve-operator-recipe-catalog-sha256=${'a'.repeat(64)}`
+      ]
+    ]
+  ])('rejects direct startup %s', (_name, flags) => {
+    expect(() => readOperatorRecipeCatalogServeFlags(['orca', '--serve', ...flags])).toThrow()
   })
 
   it('splits `--flag=value` CLI form, which getServeOptions cannot read', () => {

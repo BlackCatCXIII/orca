@@ -967,6 +967,7 @@ export class SshConnection {
     resolved: SshResolvedConfig | null,
     gssapiOnly = false
   ): Promise<void> {
+    this.assertSystemTransportAllowed()
     this.systemSshResolvedConfig = cloneResolvedConfig(resolved)
     this.systemSshControlMasterDisabledForSession = false
     this.systemSshGssapiOnlyForSession = gssapiOnly
@@ -1352,6 +1353,7 @@ export class SshConnection {
   }
 
   async connectViaSystemSsh(): Promise<SystemSshProcess> {
+    this.assertSystemTransportAllowed()
     if (this.disposed) {
       throw new Error('Connection disposed')
     }
@@ -1403,6 +1405,12 @@ export class SshConnection {
       this.systemSshGssapiOnlyForSession = false
       this.setState('error', err instanceof Error ? err.message : String(err))
       throw err
+    }
+  }
+
+  private assertSystemTransportAllowed(): void {
+    if (this.target.hostKey) {
+      throw new Error('Pinned SSH host keys require the verified in-process SSH transport.')
     }
   }
 

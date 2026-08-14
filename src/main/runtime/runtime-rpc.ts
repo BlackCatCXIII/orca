@@ -52,6 +52,7 @@ import {
   decodeTerminalStreamFrame,
   type TerminalStreamFrame
 } from '../../shared/terminal-stream-protocol'
+import type { OperatorEnvironmentRecipeCatalog } from '../operator-environment-recipe-catalog'
 
 const DEFAULT_WS_PORT = 6768
 
@@ -73,6 +74,7 @@ type OrcaRuntimeRpcServerOptions = {
   // Only `orca serve` (explicit remote opt-in) and E2E set this; the desktop app widens lazily on pairing.
   exposeNetworkByDefault?: boolean
   webClientRoot?: string
+  operatorRecipeCatalog?: OperatorEnvironmentRecipeCatalog
   // Why: test-only overrides for the two constants below; production must not pass these (defaults set by §3.1).
   keepaliveIntervalMs?: number
   longPollCap?: number
@@ -553,12 +555,13 @@ export class OrcaRuntimeRpcServer {
     preferPinnedWsPort = false,
     exposeNetworkByDefault = false,
     webClientRoot,
+    operatorRecipeCatalog,
     keepaliveIntervalMs = KEEPALIVE_INTERVAL_MS,
     longPollCap = LONG_POLL_CAP,
     metadataOwnershipPollMs = RUNTIME_METADATA_OWNERSHIP_POLL_MS
   }: OrcaRuntimeRpcServerOptions) {
     this.runtime = runtime
-    this.dispatcher = new RpcDispatcher({ runtime, userDataPath })
+    this.dispatcher = new RpcDispatcher({ runtime, userDataPath, operatorRecipeCatalog })
     this.userDataPath = userDataPath
     this.pid = pid
     this.platform = platform
