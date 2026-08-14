@@ -4,7 +4,8 @@ import { markRpcDeliveryUnknown } from '../transport/rpc-delivery-ambiguity'
 import type { RpcResponse } from '../transport/types'
 import {
   listMobileEnvironmentRecipes,
-  provisionMobileEnvironmentRecipe
+  provisionMobileEnvironmentRecipe,
+  suspendMobileEnvironmentRecipe
 } from './environment-recipe-client'
 
 const capabilities = [ENVIRONMENT_RECIPE_LIFECYCLE_RUNTIME_CAPABILITY]
@@ -43,6 +44,21 @@ describe('mobile environment recipe client', () => {
     await expect(listMobileEnvironmentRecipes({ sendRequest }, [], 'repo-1')).rejects.toThrow(
       'Update Orca on this host'
     )
+    await expect(
+      provisionMobileEnvironmentRecipe({ sendRequest }, [], {
+        repoId: 'repo-1',
+        recipeId: 'recipe-1',
+        clientMutationId: 'provision-1'
+      })
+    ).rejects.toThrow('Update Orca on this host')
+    await expect(
+      suspendMobileEnvironmentRecipe({ sendRequest }, [], {
+        repoId: 'repo-1',
+        recipeId: 'recipe-1',
+        runtimeId: 'runtime-1',
+        clientMutationId: 'suspend-1'
+      })
+    ).rejects.toThrow('Update Orca on this host')
     expect(sendRequest).not.toHaveBeenCalled()
   })
 

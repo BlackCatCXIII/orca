@@ -67,6 +67,7 @@ export const ENVIRONMENT_RECIPE_METHODS: readonly RpcMethod[] = [
   defineMethod({
     name: ENVIRONMENT_RECIPE_RPC_METHODS.provision,
     params: ProvisionRecipe,
+    // Why: after admission, host lifecycle owns completion; transport aborts may have ambiguous delivery and retries reconcile through clientMutationId.
     handler: (params, context) => provisionEnvironmentRecipeForRpc(dependencies(context), params)
   }),
   defineMethod({

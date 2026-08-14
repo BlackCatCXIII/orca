@@ -10,6 +10,8 @@ import {
 } from './protocol-version'
 import type { EphemeralVmRuntimeRecord } from './ephemeral-vm-runtimes'
 
+const TEST_HOST_FINGERPRINT = `SHA256:${'A'.repeat(43)}`
+
 function runtime(): EphemeralVmRuntimeRecord {
   return {
     id: 'runtime-1',
@@ -41,6 +43,7 @@ function runtime(): EphemeralVmRuntimeRecord {
           host: '10.0.0.8',
           port: 22,
           username: 'root',
+          hostKey: { type: 'sha256', fingerprint: TEST_HOST_FINGERPRINT },
           identityFile: '/secrets/id_ed25519',
           proxyCommand: 'secret-proxy-command'
         }
@@ -69,6 +72,7 @@ describe('environment recipe runtime RPC contract', () => {
     expect(wire).not.toContain('secret')
     expect(wire).not.toContain('10.0.0.8')
     expect(wire).not.toContain('provider create')
+    expect(wire).not.toContain(TEST_HOST_FINGERPRINT)
   })
 
   it('advertises additive methods behind one explicit mixed-version capability', () => {

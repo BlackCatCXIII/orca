@@ -57,6 +57,8 @@ const recipe: OrcaVmRecipe = {
   destroy: 'provider destroy'
 }
 
+const TEST_HOST_FINGERPRINT = `SHA256:${'A'.repeat(43)}`
+
 let userDataPath: string
 
 function deps(): EnvironmentRecipeRuntimeRpcDependencies {
@@ -109,6 +111,7 @@ function runningRuntime(
           host: '10.0.0.8',
           port: 22,
           username: 'root',
+          hostKey: { type: 'sha256', fingerprint: TEST_HOST_FINGERPRINT },
           identityFile: '/secret/key'
         }
       },
@@ -178,6 +181,15 @@ describe('remote environment recipe runtime service', () => {
         runtimeId: expect.stringMatching(/^remote-recipe-[a-f0-9]{32}$/)
       })
     )
+    expect(mocks.connectSsh).toHaveBeenCalledWith({
+      runtimeId: first.runtimeId,
+      connection: expect.objectContaining({
+        type: 'ssh',
+        target: expect.objectContaining({
+          hostKey: { type: 'sha256', fingerprint: TEST_HOST_FINGERPRINT }
+        })
+      })
+    })
     expect(first).toEqual(replay)
     expect(first).toMatchObject({
       connectionType: 'ssh',
@@ -188,6 +200,7 @@ describe('remote environment recipe runtime service', () => {
       }
     })
     expect(JSON.stringify(first)).not.toContain('secret')
+    expect(JSON.stringify(first)).not.toContain(TEST_HOST_FINGERPRINT)
   })
 
   it('bounds unexpected host failures without returning provider output', async () => {
