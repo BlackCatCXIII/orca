@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { JsonStringifyByteLimitError } from './node-bounded-json-stringify'
 import { readNodeFileSyncWithinLimit } from './node-bounded-file-reader'
-import { writeSecureJsonFileWithinLimit } from './bounded-secure-json-file'
+import { writeDurableSecureJsonFileWithinLimit } from './bounded-secure-json-file'
 import { hardenExistingSecureFile } from './secure-file'
 import {
   EphemeralVmRuntimeRecordSchema,
@@ -165,7 +165,7 @@ function readEphemeralVmRuntimeStore(userDataPath: string): EphemeralVmRuntimeSt
 function writeEphemeralVmRuntimeStore(userDataPath: string, store: EphemeralVmRuntimeStore): void {
   const path = getEphemeralVmRuntimeStorePath(userDataPath)
   try {
-    writeSecureJsonFileWithinLimit(
+    writeDurableSecureJsonFileWithinLimit(
       path,
       EphemeralVmRuntimeStoreSchema.parse(store),
       MAX_EPHEMERAL_VM_RUNTIME_STORE_FILE_BYTES

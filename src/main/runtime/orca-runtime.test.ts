@@ -7707,7 +7707,7 @@ describe('OrcaRuntimeService', () => {
         ...makeRpcRequest('repo.add', { path: equivalentPath, kind: 'git' }),
         id: 'repo-add-second'
       })
-      const explicitLocal = runtime.addRepoDurably(equivalentPath, 'git', 'local')
+      const explicitNull = runtime.addRepoDurably(equivalentPath, 'git', null)
       void second.then(
         () => {
           secondSettled = true
@@ -7747,14 +7747,14 @@ describe('OrcaRuntimeService', () => {
       expect(flushPendingOrThrowAsync).toHaveBeenCalledWith()
 
       durableWrite.resolve()
-      const [firstResponse, secondResponse, explicitLocalRepo] = await Promise.all([
+      const [firstResponse, secondResponse, nullScopeRepo] = await Promise.all([
         first,
         second,
-        explicitLocal
+        explicitNull
       ])
       expect(firstResponse).toMatchObject({ ok: true, result: { repo: { id: repos[0]?.id } } })
       expect(secondResponse).toMatchObject({ ok: true, result: { repo: { id: repos[0]?.id } } })
-      expect(explicitLocalRepo.id).toBe(repos[0]?.id)
+      expect(nullScopeRepo.id).toBe(repos[0]?.id)
     } finally {
       await rm(tempRoot, { recursive: true, force: true })
     }
@@ -7838,6 +7838,92 @@ describe('OrcaRuntimeService', () => {
       })
     } finally {
       await rm(repoPath, { recursive: true, force: true })
+    }
+  })
+
+  it('serializes host-unaware and local scopes without sharing a runtime-host result', async () => {
+    const firstWrite = deferred<void>()
+    const secondWrite = deferred<void>()
+    const repos: Record<string, unknown>[] = [
+      {
+        id: 'runtime-repo',
+        path: '/workspace',
+        displayName: 'Runtime workspace',
+        badgeColor: 'blue',
+        addedAt: 1,
+        kind: 'folder',
+        executionHostId: 'runtime:env-1'
+      }
+    ]
+    const addRepo = vi.fn((repo: Record<string, unknown>) => repos.push(repo))
+    let flushCount = 0
+    const flushPendingOrThrowAsync = vi.fn(() => {
+      flushCount += 1
+      return flushCount === 1 ? firstWrite.promise : secondWrite.promise
+    })
+    const runtime = new OrcaRuntimeService({
+      ...store,
+      getRepos: () => [...repos] as never,
+      addRepo,
+      getRepo: (id: string) => repos.find((repo) => repo.id === id) as never,
+      flushPendingOrThrowAsync
+    } as never)
+
+    const hostUnaware = runtime.addRepoDurably('/workspace', 'folder')
+    await vi.waitFor(() => expect(flushPendingOrThrowAsync).toHaveBeenCalledOnce())
+    let localSettled = false
+    const local = runtime.addRepoDurably('/workspace', 'folder', 'local').finally(() => {
+      localSettled = true
+    })
+
+    expect(addRepo).not.toHaveBeenCalled()
+    expect(localSettled).toBe(false)
+    firstWrite.resolve()
+    await expect(hostUnaware).resolves.toMatchObject({ id: 'runtime-repo' })
+    await vi.waitFor(() => expect(flushPendingOrThrowAsync).toHaveBeenCalledTimes(2))
+
+    expect(addRepo).toHaveBeenCalledOnce()
+    expect(prepareLocalWorktreeRootForRepoMock).toHaveBeenCalledOnce()
+    expect(localSettled).toBe(false)
+    expect(repos).toHaveLength(2)
+    expect(repos).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'runtime-repo', executionHostId: 'runtime:env-1' }),
+        expect.objectContaining({ executionHostId: 'local' })
+      ])
+    )
+
+    secondWrite.resolve()
+    await expect(local).resolves.toMatchObject({ executionHostId: 'local' })
+  })
+
+  it('serializes either mixed host-scope ordering on an empty store without duplicates', async () => {
+    for (const [firstHost, secondHost] of [
+      [undefined, 'local'],
+      ['local', undefined]
+    ] as const) {
+      prepareLocalWorktreeRootForRepoMock.mockClear()
+      const repos: Record<string, unknown>[] = []
+      const addRepo = vi.fn((repo: Record<string, unknown>) => repos.push(repo))
+      const flushPendingOrThrowAsync = vi.fn().mockResolvedValue(undefined)
+      const runtime = new OrcaRuntimeService({
+        ...store,
+        getRepos: () => [...repos] as never,
+        addRepo,
+        getRepo: (id: string) => repos.find((repo) => repo.id === id) as never,
+        flushPendingOrThrowAsync
+      } as never)
+
+      const [first, second] = await Promise.all([
+        runtime.addRepoDurably('/workspace', 'folder', firstHost),
+        runtime.addRepoDurably('/workspace', 'folder', secondHost)
+      ])
+
+      expect(first.id).toBe(second.id)
+      expect(repos).toHaveLength(1)
+      expect(addRepo).toHaveBeenCalledOnce()
+      expect(prepareLocalWorktreeRootForRepoMock).toHaveBeenCalledOnce()
+      expect(flushPendingOrThrowAsync).toHaveBeenCalledTimes(2)
     }
   })
 
