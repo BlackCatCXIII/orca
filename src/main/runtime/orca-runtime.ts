@@ -19136,6 +19136,22 @@ export class OrcaRuntimeService {
     return this.store.getRepo(repo.id) ?? repo
   }
 
+  async addRepoDurably(
+    path: string,
+    kind: 'git' | 'folder' = 'git',
+    executionHostId?: ExecutionHostId | null
+  ): Promise<Repo> {
+    const repo = await this.addRepo(path, kind, executionHostId)
+    if (this.store?.flushPendingOrThrowAsync) {
+      await this.store.flushPendingOrThrowAsync()
+    } else if (this.store?.flushOrThrow) {
+      this.store.flushOrThrow()
+    } else {
+      throw new Error('repo_persistence_unavailable')
+    }
+    return repo
+  }
+
   async createRepo(
     parentPath: string,
     name: string,

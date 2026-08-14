@@ -7660,6 +7660,89 @@ describe('OrcaRuntimeService', () => {
     expect(prepareLocalWorktreeRootForRepoMock).toHaveBeenCalledWith(runtimeStore, repo)
   })
 
+  it('keeps RPC-facing repo adds pending until repo and project state is durable', async () => {
+    const durableWrite = deferred<void>()
+    const repos: Record<string, unknown>[] = []
+    const addRepo = vi.fn((repo: Record<string, unknown>) => repos.push(repo))
+    const flushPendingOrThrowAsync = vi.fn(() => durableWrite.promise)
+    const runtimeStore = {
+      ...store,
+      getRepos: () => [...repos] as never,
+      addRepo,
+      getRepo: (id: string) => repos.find((repo) => repo.id === id) as never,
+      getProjects: () => projectHostSetupProjectionFromRepos(repos as never).projects as never,
+      getProjectHostSetups: () =>
+        projectHostSetupProjectionFromRepos(repos as never).setups as never,
+      flushPendingOrThrowAsync
+    }
+    const runtime = new OrcaRuntimeService(runtimeStore as never)
+    let settled = false
+
+    const added = runtime.addRepoDurably('/tmp/runtime-add-durable', 'folder').finally(() => {
+      settled = true
+    })
+    await vi.waitFor(() => expect(flushPendingOrThrowAsync).toHaveBeenCalledOnce())
+
+    expect(settled).toBe(false)
+    expect(addRepo).toHaveBeenCalledOnce()
+    expect(runtime.listRepos()).toHaveLength(1)
+    expect(runtime.listProjects()).toEqual([
+      expect.objectContaining({ sourceRepoIds: [repos[0]?.id] })
+    ])
+    expect(runtime.listProjectHostSetups()).toEqual([
+      expect.objectContaining({ repoId: repos[0]?.id, path: '/tmp/runtime-add-durable' })
+    ])
+    expect(flushPendingOrThrowAsync).toHaveBeenCalledWith()
+
+    durableWrite.resolve()
+    await expect(added).resolves.toMatchObject({ path: '/tmp/runtime-add-durable' })
+  })
+
+  it('retries a failed repo add through the same durable barrier without replaying effects', async () => {
+    const retryWrite = deferred<void>()
+    const repos: Record<string, unknown>[] = []
+    const addRepo = vi.fn((repo: Record<string, unknown>) => repos.push(repo))
+    const flushPendingOrThrowAsync = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error('disk unavailable'))
+      .mockImplementationOnce(() => retryWrite.promise)
+    const runtimeStore = {
+      ...store,
+      getRepos: () => [...repos] as never,
+      addRepo,
+      getRepo: (id: string) => repos.find((repo) => repo.id === id) as never,
+      getProjects: () => projectHostSetupProjectionFromRepos(repos as never).projects as never,
+      getProjectHostSetups: () =>
+        projectHostSetupProjectionFromRepos(repos as never).setups as never,
+      flushPendingOrThrowAsync
+    }
+    const runtime = new OrcaRuntimeService(runtimeStore as never)
+
+    await expect(
+      runtime.addRepoDurably('/tmp/runtime-add-durable-retry', 'folder')
+    ).rejects.toThrow('disk unavailable')
+    const existingId = repos[0]?.id
+    let retrySettled = false
+    const retry = runtime.addRepoDurably('/tmp/runtime-add-durable-retry', 'folder').finally(() => {
+      retrySettled = true
+    })
+    await vi.waitFor(() => expect(flushPendingOrThrowAsync).toHaveBeenCalledTimes(2))
+
+    expect(retrySettled).toBe(false)
+    expect(addRepo).toHaveBeenCalledOnce()
+    expect(prepareLocalWorktreeRootForRepoMock).toHaveBeenCalledOnce()
+    expect(runtime.listRepos()).toHaveLength(1)
+    expect(runtime.listProjects()).toEqual([
+      expect.objectContaining({ sourceRepoIds: [existingId] })
+    ])
+    expect(runtime.listProjectHostSetups()).toEqual([
+      expect.objectContaining({ repoId: existingId, path: '/tmp/runtime-add-durable-retry' })
+    ])
+
+    retryWrite.resolve()
+    await expect(retry).resolves.toMatchObject({ id: existingId })
+  })
+
   it('sets up an existing folder on a fresh runtime after importing the repo project', async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), 'orca-runtime-project-setup-'))
     const repos: Record<string, unknown>[] = []
