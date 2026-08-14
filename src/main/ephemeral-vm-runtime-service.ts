@@ -36,6 +36,8 @@ export type ProvisionEphemeralVmRuntimeArgs = {
   onStderr?: (chunk: string) => void
   executionMode?: 'shell' | 'direct'
   operatorRecipeCatalogSha256?: string
+  provisionMutation?: EphemeralVmRuntimeRecord['provisionMutation']
+  onTerminalProvisionFailure?: () => void
 }
 
 export type ProvisionEphemeralVmRuntimeResult =
@@ -127,6 +129,7 @@ export async function provisionEphemeralVmRuntime(
         context: start.context,
         recipeResult: start.recipeResult
       })
+      args.onTerminalProvisionFailure?.()
     }
     return { ok: false, start }
   }

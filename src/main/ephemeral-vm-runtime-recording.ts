@@ -17,6 +17,8 @@ type ProvisionedRuntimeRecordingArgs = {
   workspaceName?: string
   executionMode?: 'shell' | 'direct'
   operatorRecipeCatalogSha256?: string
+  provisionMutation?: EphemeralVmRuntimeRecord['provisionMutation']
+  onTerminalProvisionFailure?: () => void
 }
 
 export async function recordProvisionedEphemeralVmRuntime(
@@ -33,6 +35,7 @@ export async function recordProvisionedEphemeralVmRuntime(
       ...(args.operatorRecipeCatalogSha256
         ? { operatorRecipeCatalogSha256: args.operatorRecipeCatalogSha256 }
         : {}),
+      ...(args.provisionMutation ? { provisionMutation: args.provisionMutation } : {}),
       ...(args.repoId ? { repoId: args.repoId } : {}),
       ...(args.projectId ? { projectId: args.projectId } : {}),
       ...(args.workspaceId ? { workspaceId: args.workspaceId } : {}),
@@ -46,13 +49,37 @@ export async function recordProvisionedEphemeralVmRuntime(
       recipeResult: start.result
     })
   } catch (error) {
-    await runEphemeralVmRecipeCleanup({
+    const cleanup = await runEphemeralVmRecipeCleanup({
       repoPath: args.repoPath,
       recipe: args.recipe,
       executionMode: args.executionMode,
       context: start.context,
       recipeResult: start.result
-    }).catch(() => undefined)
+    }).catch(() => null)
+    if (args.provisionMutation && cleanup && (!cleanup.ok || !cleanup.skipped)) {
+      upsertEphemeralVmRuntime(args.userDataPath, {
+        id: start.context.instanceId ?? start.context.recipeId,
+        recipeId: args.recipe.id,
+        recipe: args.recipe,
+        ...(args.operatorRecipeCatalogSha256
+          ? { operatorRecipeCatalogSha256: args.operatorRecipeCatalogSha256 }
+          : {}),
+        ...(args.provisionMutation ? { provisionMutation: args.provisionMutation } : {}),
+        ...(args.repoId ? { repoId: args.repoId } : {}),
+        ...(args.projectId ? { projectId: args.projectId } : {}),
+        ...(args.workspaceId ? { workspaceId: args.workspaceId } : {}),
+        ...(args.workspaceName ? { workspaceName: args.workspaceName } : {}),
+        status: cleanup.ok ? 'cleaned' : 'cleanup_failed',
+        connectionMode: connection.type,
+        cleanupStatus: cleanup.ok ? 'succeeded' : 'failed',
+        cleanupLastAttemptAt: now,
+        ...(!cleanup.ok ? { cleanupLastError: cleanup.error ?? 'Destroy failed.' } : {}),
+        createdAt: now,
+        updatedAt: now,
+        recipeResult: start.result
+      })
+      args.onTerminalProvisionFailure?.()
+    }
     throw error
   }
 }

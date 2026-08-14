@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { encodePairingOffer, PAIRING_OFFER_VERSION } from '../shared/pairing'
 import {
   listEphemeralVmRuntimes,
@@ -105,6 +105,10 @@ describe('ephemeral VM runtime service', () => {
       repoId: 'repo-1',
       projectId: 'project-1',
       workspaceName: 'Fix Login Race',
+      provisionMutation: {
+        requestSha256: 'f'.repeat(64),
+        resolvedRef: 'a'.repeat(40)
+      },
       now: 1_000
     })
 
@@ -119,6 +123,10 @@ describe('ephemeral VM runtime service', () => {
       repoId: 'repo-1',
       projectId: 'project-1',
       workspaceName: 'Fix Login Race',
+      provisionMutation: {
+        requestSha256: 'f'.repeat(64),
+        resolvedRef: 'a'.repeat(40)
+      },
       status: 'running',
       cleanupStatus: 'not_started',
       createdAt: 1_000,
@@ -231,7 +239,7 @@ describe('ephemeral VM runtime service', () => {
     ).resolves.toMatchObject({ ok: true, skipped: true })
   })
 
-  it('destroys a provisioned resource when the runtime record cannot be persisted', async () => {
+  it('destroys a provisioned resource but stays uncertain when no tombstone can persist', async () => {
     const repoPath = makeDir('orca-ephemeral-vm-service-repo-')
     const userDataPath = join(repoPath, 'not-a-directory')
     const startPath = join(repoPath, 'start.js')
@@ -248,6 +256,7 @@ describe('ephemeral VM runtime service', () => {
       )})`
     )
     writeFileSync(cleanupPath, "require('fs').writeFileSync('cleanup-ran.txt', 'yes')")
+    const onTerminalProvisionFailure = vi.fn()
 
     await expect(
       provisionEphemeralVmRuntime({
@@ -258,10 +267,47 @@ describe('ephemeral VM runtime service', () => {
           name: 'Cloud Sandbox',
           create: nodeCommand(startPath),
           destroy: nodeCommand(cleanupPath)
-        }
+        },
+        onTerminalProvisionFailure
       })
     ).rejects.toThrow()
+    expect(onTerminalProvisionFailure).not.toHaveBeenCalled()
     expect(readFileSync(join(repoPath, 'cleanup-ran.txt'), 'utf8')).toBe('yes')
+  })
+
+  it('keeps runtime-record failures uncertain when cleanup is not confirmed', async () => {
+    const repoPath = makeDir('orca-ephemeral-vm-service-repo-')
+    const userDataPath = join(repoPath, 'not-a-directory')
+    const startPath = join(repoPath, 'start.js')
+    const cleanupPath = join(repoPath, 'cleanup.js')
+    writeFileSync(userDataPath, 'file')
+    writeFileSync(
+      startPath,
+      `console.log(${JSON.stringify(
+        JSON.stringify({
+          schemaVersion: 1,
+          pairingCode: makePairingCode(),
+          projectRoot: '/workspace/repo'
+        })
+      )})`
+    )
+    writeFileSync(cleanupPath, 'process.exit(1)')
+    const onTerminalProvisionFailure = vi.fn()
+
+    await expect(
+      provisionEphemeralVmRuntime({
+        userDataPath,
+        repoPath,
+        recipe: {
+          id: 'cloud-sandbox',
+          name: 'Cloud Sandbox',
+          create: nodeCommand(startPath),
+          destroy: nodeCommand(cleanupPath)
+        },
+        onTerminalProvisionFailure
+      })
+    ).rejects.toThrow()
+    expect(onTerminalProvisionFailure).not.toHaveBeenCalled()
   })
 
   it('destroys a provisioned resource when its checkout handshake is incompatible', async () => {
@@ -280,6 +326,13 @@ describe('ephemeral VM runtime service', () => {
       )})`
     )
     writeFileSync(cleanupPath, "require('fs').writeFileSync('cleanup-ran.txt', 'yes')")
+    const provisionMutation = {
+      requestSha256: 'f'.repeat(64),
+      resolvedRef: 'a'.repeat(40)
+    }
+    const onTerminalProvisionFailure = vi.fn(() => {
+      expect(readFileSync(join(repoPath, 'cleanup-ran.txt'), 'utf8')).toBe('yes')
+    })
 
     const provisioned = await provisionEphemeralVmRuntime({
       userDataPath,
@@ -290,7 +343,10 @@ describe('ephemeral VM runtime service', () => {
         checkoutMode: 'provisioned-root',
         create: nodeCommand(startPath),
         destroy: nodeCommand(cleanupPath)
-      }
+      },
+      operatorRecipeCatalogSha256: 'c'.repeat(64),
+      provisionMutation,
+      onTerminalProvisionFailure
     })
 
     expect(provisioned).toMatchObject({
@@ -300,8 +356,16 @@ describe('ephemeral VM runtime service', () => {
           'Provisioned-root recipes must return schemaVersion 2 with checkoutMode "provisioned-root".'
       }
     })
+    expect(onTerminalProvisionFailure).toHaveBeenCalledOnce()
     expect(readFileSync(join(repoPath, 'cleanup-ran.txt'), 'utf8')).toBe('yes')
-    expect(listEphemeralVmRuntimes(userDataPath)).toEqual([])
+    expect(listEphemeralVmRuntimes(userDataPath)).toEqual([
+      expect.objectContaining({
+        operatorRecipeCatalogSha256: 'c'.repeat(64),
+        provisionMutation,
+        status: 'cleaned',
+        cleanupStatus: 'succeeded'
+      })
+    ])
   })
 
   it('persists failed cleanup after an incompatible checkout handshake', async () => {
@@ -327,6 +391,11 @@ describe('ephemeral VM runtime service', () => {
       create: nodeCommand(startPath),
       destroy: nodeCommand(cleanupPath)
     }
+    const onTerminalProvisionFailure = vi.fn(() => {
+      expect(listEphemeralVmRuntimes(userDataPath)[0]).toMatchObject({
+        status: 'cleanup_failed'
+      })
+    })
 
     const provisioned = await provisionEphemeralVmRuntime({
       userDataPath,
@@ -334,10 +403,12 @@ describe('ephemeral VM runtime service', () => {
       recipe,
       repoId: 'repo-1',
       workspaceName: 'Fix Login Race',
+      onTerminalProvisionFailure,
       now: 1_000
     })
 
     expect(provisioned.ok).toBe(false)
+    expect(onTerminalProvisionFailure).toHaveBeenCalledOnce()
     expect(listEphemeralVmRuntimes(userDataPath)).toEqual([
       expect.objectContaining({
         recipe,

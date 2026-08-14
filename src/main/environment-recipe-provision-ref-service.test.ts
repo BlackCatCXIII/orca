@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -7,6 +7,7 @@ import { upsertEphemeralVmRuntime } from '../shared/ephemeral-vm-runtime-store'
 import type { Repo } from '../shared/repo-types'
 import type { OperatorEnvironmentRecipeCatalog } from './operator-environment-recipe-catalog'
 import { resolveEnvironmentRecipeProvisionRef } from './environment-recipe-provision-ref'
+import { getEnvironmentRecipeOperationJournalPath } from './environment-recipe-operation-journal'
 
 const provisionMock = vi.hoisted(() => vi.fn())
 
@@ -61,37 +62,43 @@ beforeEach(() => {
   userDataPath = mkdtempSync(join(tmpdir(), 'orca-operator-provision-ref-'))
   resetEnvironmentRecipeRpcStateForTests()
   provisionMock.mockReset()
-  provisionMock.mockImplementation(async (args: { runtimeId: string }) => {
-    const runtime = upsertEphemeralVmRuntime(userDataPath, {
-      id: args.runtimeId,
-      repoId: targetRepo.id,
-      recipeId: recipe.id,
-      recipe,
-      operatorRecipeCatalogSha256: catalog.status.digest,
-      status: 'running',
-      cleanupStatus: 'not_started',
-      connectionMode: 'ssh',
-      sshTargetId: 'runtime-ssh-pinned',
-      createdAt: 1,
-      updatedAt: 1,
-      recipeResult: {
-        schemaVersion: 2,
-        checkoutMode: 'provisioned-root',
-        connection: {
-          type: 'ssh',
-          projectRoot: '/srv/repo',
-          target: {
-            label: 'host',
-            host: 'host',
-            port: 22,
-            username: 'root',
-            hostKey: { type: 'sha256', fingerprint: `SHA256:${'A'.repeat(43)}` }
+  provisionMock.mockImplementation(
+    async (args: {
+      runtimeId: string
+      provisionMutation?: { requestSha256: string; resolvedRef: string }
+    }) => {
+      const runtime = upsertEphemeralVmRuntime(userDataPath, {
+        id: args.runtimeId,
+        repoId: targetRepo.id,
+        recipeId: recipe.id,
+        recipe,
+        operatorRecipeCatalogSha256: catalog.status.digest,
+        ...(args.provisionMutation ? { provisionMutation: args.provisionMutation } : {}),
+        status: 'running',
+        cleanupStatus: 'not_started',
+        connectionMode: 'ssh',
+        sshTargetId: 'runtime-ssh-pinned',
+        createdAt: 1,
+        updatedAt: 1,
+        recipeResult: {
+          schemaVersion: 2,
+          checkoutMode: 'provisioned-root',
+          connection: {
+            type: 'ssh',
+            projectRoot: '/srv/repo',
+            target: {
+              label: 'host',
+              host: 'host',
+              port: 22,
+              username: 'root',
+              hostKey: { type: 'sha256', fingerprint: `SHA256:${'A'.repeat(43)}` }
+            }
           }
         }
-      }
-    })
-    return { ok: true, runtime, start: { ok: true } }
-  })
+      })
+      return { ok: true, runtime, start: { ok: true } }
+    }
+  )
 })
 
 afterEach(() => {
@@ -99,7 +106,7 @@ afterEach(() => {
 })
 
 describe('operator environment recipe provision ref service', () => {
-  it('pins missing ref to HEAD once and retains it across restart replay after HEAD moves', async () => {
+  it('replays the pinned ref after a side effect boundary crash and later runtime success', async () => {
     let head = 'a'.repeat(40)
     const gitExec = vi.fn(async () => ({ stdout: `${head}\n` }))
     const resolver = (args: Parameters<typeof resolveEnvironmentRecipeProvisionRef>[0]) =>
@@ -107,23 +114,84 @@ describe('operator environment recipe provision ref service', () => {
     const params = {
       repoId: targetRepo.id,
       recipeId: recipe.id,
-      clientMutationId: 'pin-head'
+      clientMutationId: 'pin-head',
+      workspaceName: 'Private workspace label'
     }
+    provisionMock.mockImplementationOnce(async () => {
+      throw new Error('crash after recipe invocation')
+    })
 
-    await provisionEnvironmentRecipeForRpc(dependencies(targetRepo, resolver), params)
-    expect(provisionMock).toHaveBeenCalledWith(
+    await expect(
+      provisionEnvironmentRecipeForRpc(dependencies(targetRepo, resolver), params)
+    ).rejects.toMatchObject({ code: 'environment_recipe_failed' })
+    expect(provisionMock.mock.calls[0]?.[0]).toEqual(
       expect.objectContaining({ ref: 'a'.repeat(40), branch: undefined })
     )
+    expect(
+      readFileSync(getEnvironmentRecipeOperationJournalPath(userDataPath), 'utf8')
+    ).not.toContain(params.workspaceName)
 
+    resetEnvironmentRecipeRpcStateForTests()
     head = 'b'.repeat(40)
     await provisionEnvironmentRecipeForRpc(dependencies(targetRepo, resolver), params)
     expect(gitExec).toHaveBeenCalledOnce()
-    expect(provisionMock).toHaveBeenCalledOnce()
+    expect(provisionMock.mock.calls[1]?.[0]).toEqual(
+      expect.objectContaining({ ref: 'a'.repeat(40), branch: undefined })
+    )
 
     resetEnvironmentRecipeRpcStateForTests()
     head = 'c'.repeat(40)
     await provisionEnvironmentRecipeForRpc(dependencies(targetRepo, resolver), params)
     expect(gitExec).toHaveBeenCalledOnce()
+    expect(provisionMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('fails closed before recipe invocation when the durable pin cannot be written', async () => {
+    const blockedUserDataPath = join(userDataPath, 'not-a-directory')
+    writeFileSync(blockedUserDataPath, 'blocked', 'utf8')
+    const resolver = vi.fn().mockResolvedValue('a'.repeat(40))
+
+    await expect(
+      provisionEnvironmentRecipeForRpc(
+        { ...dependencies(targetRepo, resolver), userDataPath: blockedUserDataPath },
+        {
+          repoId: targetRepo.id,
+          recipeId: recipe.id,
+          clientMutationId: 'journal-write-failure'
+        }
+      )
+    ).rejects.toMatchObject({ code: 'environment_recipe_failed' })
+    expect(resolver).toHaveBeenCalledOnce()
+    expect(provisionMock).not.toHaveBeenCalled()
+  })
+
+  it('rejects prepared replay after the operator catalog changes', async () => {
+    const resolver = vi.fn().mockResolvedValue('a'.repeat(40))
+    const params = {
+      repoId: targetRepo.id,
+      recipeId: recipe.id,
+      clientMutationId: 'catalog-change'
+    }
+    provisionMock.mockRejectedValueOnce(new Error('crash after recipe invocation'))
+
+    await expect(
+      provisionEnvironmentRecipeForRpc(dependencies(targetRepo, resolver), params)
+    ).rejects.toMatchObject({ code: 'environment_recipe_failed' })
+    resetEnvironmentRecipeRpcStateForTests()
+    const changedCatalog: OperatorEnvironmentRecipeCatalog = {
+      ...catalog,
+      status: { ...catalog.status, digest: 'd'.repeat(64) }
+    }
+
+    await expect(
+      Promise.resolve().then(() =>
+        provisionEnvironmentRecipeForRpc(
+          { ...dependencies(targetRepo, resolver), operatorRecipeCatalog: changedCatalog },
+          params
+        )
+      )
+    ).rejects.toMatchObject({ code: 'environment_recipe_conflict' })
+    expect(resolver).toHaveBeenCalledOnce()
     expect(provisionMock).toHaveBeenCalledOnce()
   })
 
@@ -143,6 +211,204 @@ describe('operator environment recipe provision ref service', () => {
       expect.objectContaining({ ref: 'refs/tags/operator-release' })
     )
     expect(gitExec).not.toHaveBeenCalled()
+  })
+
+  it('rejects conflicting reuse of a durable mutation identity after restart', async () => {
+    const resolver = vi.fn().mockResolvedValue('a'.repeat(40))
+    const params = {
+      repoId: targetRepo.id,
+      recipeId: recipe.id,
+      clientMutationId: 'strict-conflict',
+      workspaceName: 'first'
+    }
+
+    await provisionEnvironmentRecipeForRpc(dependencies(targetRepo, resolver), params)
+    resetEnvironmentRecipeRpcStateForTests()
+
+    await expect(
+      Promise.resolve().then(() =>
+        provisionEnvironmentRecipeForRpc(dependencies(targetRepo, resolver), {
+          ...params,
+          workspaceName: 'different'
+        })
+      )
+    ).rejects.toMatchObject({ code: 'environment_recipe_conflict' })
+    expect(resolver).toHaveBeenCalledOnce()
+    expect(provisionMock).toHaveBeenCalledOnce()
+  })
+
+  it('rejects replay after a recipe-start failure reached terminal cleanup', async () => {
+    const resolver = vi.fn().mockResolvedValue('a'.repeat(40))
+    const params = {
+      repoId: targetRepo.id,
+      recipeId: recipe.id,
+      clientMutationId: 'terminal-start-failure'
+    }
+    provisionMock.mockImplementationOnce(
+      async (args: { onTerminalProvisionFailure?: () => void }) => {
+        args.onTerminalProvisionFailure?.()
+        return { ok: false, start: { ok: false, error: 'start failed', recipeResult: {} } }
+      }
+    )
+
+    await expect(
+      Promise.resolve().then(() =>
+        provisionEnvironmentRecipeForRpc(dependencies(targetRepo, resolver), params)
+      )
+    ).rejects.toMatchObject({ code: 'environment_recipe_failed' })
+
+    await expect(
+      Promise.resolve().then(() =>
+        provisionEnvironmentRecipeForRpc(dependencies(targetRepo, resolver), params)
+      )
+    ).rejects.toMatchObject({
+      code: 'environment_recipe_conflict',
+      message: expect.stringContaining('new attempt')
+    })
+    resetEnvironmentRecipeRpcStateForTests()
+    await expect(
+      Promise.resolve().then(() =>
+        provisionEnvironmentRecipeForRpc(dependencies(targetRepo, resolver), params)
+      )
+    ).rejects.toMatchObject({
+      code: 'environment_recipe_conflict',
+      message: expect.stringContaining('new attempt')
+    })
+    resetEnvironmentRecipeRpcStateForTests()
+    await expect(
+      Promise.resolve().then(() =>
+        provisionEnvironmentRecipeForRpc(dependencies(targetRepo, resolver), {
+          ...params,
+          workspaceName: 'conflicting terminal reuse'
+        })
+      )
+    ).rejects.toMatchObject({
+      code: 'environment_recipe_conflict',
+      message: expect.stringContaining('different recipe request')
+    })
+    expect(resolver).toHaveBeenCalledOnce()
+    expect(provisionMock).toHaveBeenCalledOnce()
+  })
+
+  it('uses runtime bindings for strict replay after completed journal retention', async () => {
+    const resolver = vi.fn().mockResolvedValue('a'.repeat(40))
+    const params = {
+      repoId: targetRepo.id,
+      recipeId: recipe.id,
+      clientMutationId: 'runtime-binding'
+    }
+
+    await provisionEnvironmentRecipeForRpc(dependencies(targetRepo, resolver), params)
+    rmSync(getEnvironmentRecipeOperationJournalPath(userDataPath))
+    resetEnvironmentRecipeRpcStateForTests()
+
+    await expect(
+      provisionEnvironmentRecipeForRpc(dependencies(targetRepo, resolver), params)
+    ).resolves.toMatchObject({ repoId: targetRepo.id, recipeId: recipe.id })
+    resetEnvironmentRecipeRpcStateForTests()
+    await expect(
+      provisionEnvironmentRecipeForRpc(dependencies(targetRepo, resolver), {
+        ...params,
+        ref: 'b'.repeat(40)
+      })
+    ).rejects.toMatchObject({ code: 'environment_recipe_conflict' })
+    resetEnvironmentRecipeRpcStateForTests()
+    await expect(
+      provisionEnvironmentRecipeForRpc(dependencies(targetRepo, resolver), {
+        ...params,
+        branch: 'moved-branch'
+      })
+    ).rejects.toMatchObject({ code: 'environment_recipe_conflict' })
+    expect(resolver).toHaveBeenCalledOnce()
+    expect(provisionMock).toHaveBeenCalledOnce()
+  })
+
+  it('uses a cleaned runtime tombstone after terminal journal retention', async () => {
+    const resolver = vi.fn().mockResolvedValue('a'.repeat(40))
+    const params = {
+      repoId: targetRepo.id,
+      recipeId: recipe.id,
+      clientMutationId: 'terminal-runtime-binding'
+    }
+    provisionMock.mockImplementationOnce(
+      async (args: {
+        runtimeId: string
+        provisionMutation: { requestSha256: string; resolvedRef: string }
+        onTerminalProvisionFailure: () => void
+      }) => {
+        upsertEphemeralVmRuntime(userDataPath, {
+          id: args.runtimeId,
+          repoId: targetRepo.id,
+          recipeId: recipe.id,
+          recipe,
+          operatorRecipeCatalogSha256: catalog.status.digest,
+          provisionMutation: args.provisionMutation,
+          status: 'cleaned',
+          cleanupStatus: 'succeeded',
+          connectionMode: 'ssh',
+          createdAt: 1,
+          updatedAt: 1,
+          recipeResult: {
+            schemaVersion: 2,
+            checkoutMode: 'provisioned-root',
+            connection: {
+              type: 'ssh',
+              projectRoot: '/srv/repo',
+              target: {
+                label: 'host',
+                host: 'host',
+                port: 22,
+                username: 'root',
+                hostKey: { type: 'sha256', fingerprint: `SHA256:${'A'.repeat(43)}` }
+              }
+            }
+          }
+        })
+        args.onTerminalProvisionFailure()
+        return { ok: false, start: { ok: false, error: 'start failed', recipeResult: {} } }
+      }
+    )
+
+    await expect(
+      provisionEnvironmentRecipeForRpc(dependencies(targetRepo, resolver), params)
+    ).rejects.toMatchObject({ code: 'environment_recipe_failed' })
+    rmSync(getEnvironmentRecipeOperationJournalPath(userDataPath))
+    resetEnvironmentRecipeRpcStateForTests()
+
+    await expect(
+      provisionEnvironmentRecipeForRpc(dependencies(targetRepo, resolver), params)
+    ).rejects.toMatchObject({
+      code: 'environment_recipe_conflict',
+      message: expect.stringContaining('new attempt')
+    })
+    resetEnvironmentRecipeRpcStateForTests()
+    await expect(
+      provisionEnvironmentRecipeForRpc(dependencies(targetRepo, resolver), {
+        ...params,
+        branch: 'conflict'
+      })
+    ).rejects.toMatchObject({ code: 'environment_recipe_conflict' })
+    expect(resolver).toHaveBeenCalledOnce()
+    expect(provisionMock).toHaveBeenCalledOnce()
+  })
+
+  it('leaves missing-ref nonoperator provisioning unchanged', async () => {
+    const resolver = vi.fn().mockResolvedValue(undefined)
+    const deps = {
+      ...dependencies(targetRepo, resolver),
+      operatorRecipeCatalog: undefined,
+      getPluginRecipes: async () => [recipe]
+    }
+
+    await provisionEnvironmentRecipeForRpc(deps, {
+      repoId: targetRepo.id,
+      recipeId: recipe.id,
+      clientMutationId: 'legacy-missing-ref'
+    })
+
+    expect(provisionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ ref: undefined, branch: undefined, executionMode: 'shell' })
+    )
   })
 
   it.each(['missing', 'unborn', 'ambiguous', 'noncommit', 'vanished'])(

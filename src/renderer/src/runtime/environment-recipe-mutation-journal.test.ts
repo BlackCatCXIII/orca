@@ -24,6 +24,7 @@ describe('desktop environment recipe mutation journal', () => {
     }
     saveDesktopEnvironmentRecipeMutation('environment-1', entry)
     expect(loadDesktopEnvironmentRecipeMutation('environment-1')).toEqual(entry)
+    expect(loadDesktopEnvironmentRecipeMutation('environment-1')).not.toHaveProperty('ref')
 
     localStorage.setItem(
       'orca.environment-recipe-mutation.v1:environment-1',

@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { EnvironmentRecipeRuntime } from '../shared/environment-recipe-runtime-rpc'
 import {
+  environmentRecipeMutationRequestSha256,
   environmentRecipeMutationRuntimeId,
   resetEnvironmentRecipeOperationControlForTests,
   runIdempotentEnvironmentRecipeMutation,
@@ -41,6 +42,30 @@ afterEach(() => {
 })
 
 describe('environment recipe operation profile isolation', () => {
+  it('hashes normalized request fields with a stable lowercase digest', () => {
+    const first = environmentRecipeMutationRequestSha256({
+      repoId: 'repo-1',
+      clientMutationId: 'mutation-1',
+      ref: undefined,
+      branch: 'main'
+    })
+    const reordered = environmentRecipeMutationRequestSha256({
+      branch: 'main',
+      clientMutationId: 'mutation-1',
+      repoId: 'repo-1'
+    })
+
+    expect(first).toMatch(/^[0-9a-f]{64}$/)
+    expect(reordered).toBe(first)
+    expect(
+      environmentRecipeMutationRequestSha256({
+        branch: 'different',
+        clientMutationId: 'mutation-1',
+        repoId: 'repo-1'
+      })
+    ).not.toBe(first)
+  })
+
   it('does not share dedupe promises or generated IDs across profiles', async () => {
     const [firstProfile, secondProfile] = [profilePath(), profilePath()]
     const params = { clientMutationId: 'same-mutation' }

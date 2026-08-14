@@ -120,7 +120,7 @@ describe('mobile environment recipe client', () => {
     })
   })
 
-  it('replays an ambiguous provision with the same host idempotency key', async () => {
+  it('replays a missing-ref provision with the same host idempotency key', async () => {
     const sendRequest = vi
       .fn()
       .mockRejectedValueOnce(markRpcDeliveryUnknown(new Error('connection closed')))
@@ -137,6 +137,7 @@ describe('mobile environment recipe client', () => {
     expect(sendRequest).toHaveBeenCalledTimes(2)
     expect(sendRequest.mock.calls[0]?.[1]).toEqual(args)
     expect(sendRequest.mock.calls[1]?.[1]).toEqual(args)
+    expect(sendRequest.mock.calls[0]?.[1]).not.toHaveProperty('ref')
   })
 
   it('rejects a response that leaks recipe result credentials', async () => {

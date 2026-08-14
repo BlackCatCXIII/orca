@@ -29,6 +29,7 @@ describe('mobile environment recipe mutation journal', () => {
     await saveEnvironmentRecipeMutation('host-1', entry)
 
     await expect(loadEnvironmentRecipeMutation('host-1')).resolves.toEqual(entry)
+    await expect(loadEnvironmentRecipeMutation('host-1')).resolves.not.toHaveProperty('ref')
     expect([...values.values()].join('')).not.toContain('credential')
 
     values.set(

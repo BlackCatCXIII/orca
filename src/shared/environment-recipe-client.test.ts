@@ -57,7 +57,7 @@ describe('shared environment recipe client', () => {
     ).resolves.toEqual({ repoId: 'repo-1', runtimes: [] })
   })
 
-  it('keeps the mutation key stable across ambiguous delivery retries', async () => {
+  it('keeps a missing-ref desktop mutation stable across ambiguous delivery retries', async () => {
     const request = vi
       .fn()
       .mockRejectedValueOnce(new Error('cutover'))
@@ -72,6 +72,7 @@ describe('shared environment recipe client', () => {
       provisionEnvironmentRecipe(request, capabilities, args, () => true)
     ).resolves.toMatchObject({ runtimeId: 'runtime-1' })
     expect(request.mock.calls.map((call) => call[1])).toEqual([args, args])
+    expect(request.mock.calls[0]?.[1]).not.toHaveProperty('ref')
   })
 
   it('redacts unclassified host errors', async () => {

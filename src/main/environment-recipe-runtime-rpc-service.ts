@@ -41,6 +41,11 @@ import {
   resolveEnvironmentRecipeProvisionRef,
   type EnvironmentRecipeProvisionRefResolver
 } from './environment-recipe-provision-ref'
+import {
+  operatorEnvironmentRecipeProvisionMutationBinding,
+  requireEnvironmentRecipeProvisionMutationBinding
+} from './environment-recipe-provision-mutation-binding'
+import { failedOperation, invalidLifecycleState } from './environment-recipe-rpc-errors'
 
 export { EnvironmentRecipeRpcError } from './environment-recipe-operation-control'
 export { listEnvironmentRecipeRuntimes as listEnvironmentRecipeRuntimesForRpc } from './environment-recipe-runtime-list'
@@ -93,7 +98,7 @@ export function provisionEnvironmentRecipeForRpc(
     deps.pairedDeviceId,
     ENVIRONMENT_RECIPE_RPC_METHODS.provision,
     params,
-    async () => {
+    async (mutation) => {
       const repo = requireEnvironmentRecipeRepo(deps.runtime, params.repoId)
       const runtimeId = environmentRecipeMutationRuntimeId(
         deps.userDataPath,
@@ -116,6 +121,7 @@ export function provisionEnvironmentRecipeForRpc(
         deps.operatorRecipeCatalog
       )
       if (existing) {
+        requireEnvironmentRecipeProvisionMutationBinding(existing, mutation)
         requireEnvironmentRecipeRuntimeScope(existing, params)
         if (
           deps.operatorRecipeCatalog &&
@@ -139,11 +145,16 @@ export function provisionEnvironmentRecipeForRpc(
         return finalizeProvisionedEnvironmentRecipeRuntime(deps, repo, recipe, existing)
       }
 
-      const ref = await (deps.resolveProvisionRef ?? resolveEnvironmentRecipeProvisionRef)({
-        repoPath: repo.path,
-        requestedRef: params.ref,
-        operatorCatalogEnabled: Boolean(deps.operatorRecipeCatalog)
-      })
+      const ref =
+        mutation.provisionRef ??
+        (await (deps.resolveProvisionRef ?? resolveEnvironmentRecipeProvisionRef)({
+          repoPath: repo.path,
+          requestedRef: params.ref,
+          operatorCatalogEnabled: Boolean(deps.operatorRecipeCatalog)
+        }))
+      if (deps.operatorRecipeCatalog && !mutation.provisionRef) {
+        mutation.persistProvisionRef(ref!, runtimeId)
+      }
 
       const provisioned = await provisionEphemeralVmRuntime({
         userDataPath: deps.userDataPath,
@@ -161,13 +172,18 @@ export function provisionEnvironmentRecipeForRpc(
         branch: params.branch,
         ref,
         executionMode: deps.operatorRecipeCatalog ? 'direct' : 'shell',
-        operatorRecipeCatalogSha256: deps.operatorRecipeCatalog?.status.digest
+        ...operatorEnvironmentRecipeProvisionMutationBinding(
+          deps.operatorRecipeCatalog?.status.digest,
+          mutation,
+          ref
+        )
       })
       if (!provisioned.ok) {
         throw failedOperation('Provision', provisioned.start.error)
       }
       return finalizeProvisionedEnvironmentRecipeRuntime(deps, repo, recipe, provisioned.runtime)
-    }
+    },
+    { operatorRecipeCatalogSha256: deps.operatorRecipeCatalog?.status.digest }
   )
 }
 
@@ -295,17 +311,3 @@ export function destroyEnvironmentRecipeForRpc(
 }
 
 export const resetEnvironmentRecipeRpcStateForTests = resetRpcState
-
-function invalidLifecycleState(action: string, status: string): EnvironmentRecipeRpcError {
-  return new EnvironmentRecipeRpcError(
-    'environment_recipe_conflict',
-    `Cannot ${action} a recipe-created runtime in '${status}' state.`
-  )
-}
-
-function failedOperation(action: string, _error: unknown): EnvironmentRecipeRpcError {
-  return new EnvironmentRecipeRpcError(
-    'environment_recipe_failed',
-    `${action} failed on the runtime host.`
-  )
-}
