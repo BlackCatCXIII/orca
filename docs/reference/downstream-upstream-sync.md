@@ -2,8 +2,13 @@
 
 The daily readiness workflow answers one question without changing the fork: can the exact
 downstream commit merge the exact commit currently advertised by `stablyai/orca` `main`? It
-uses a disposable repository, publishes JSON and Markdown evidence for 14 days, and fails when
+uses a disposable repository, retains JSON and Markdown evidence in private MinIO, and fails when
 the refs move, history is incomplete, or the simulated merge conflicts.
+
+The workflow runs only on the exact `orca-source-ci` ARC label. It uses no GitHub-hosted runner,
+GitHub artifact storage, or GitHub dependency cache. The report key contains the full downstream
+SHA, workflow digest, run ID, run attempt, and content SHA; curl SigV4 uploads are non-overwriting,
+and every retained object must pass a digest-verified readback before the workflow can succeed.
 
 The workflow is intentionally read-only. It cannot push, open or update pull requests or issues,
 publish releases, deploy, or read repository secrets. Its credential-free checkout and public

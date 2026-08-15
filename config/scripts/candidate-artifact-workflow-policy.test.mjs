@@ -176,46 +176,53 @@ const adversarialCases = [
     (workflow) => (workflow.jobs.unexpected = structuredClone(workflow.jobs['desktop-linux-x64']))
   ],
   [
-    'extra upload',
+    'GitHub-hosted runner',
+    (workflow) => (workflow.jobs['desktop-linux-x64']['runs-on'] = 'ubuntu-latest')
+  ],
+  [
+    'GitHub artifact storage',
+    (workflow) =>
+      workflow.jobs['desktop-linux-x64'].steps.push({
+        uses: 'actions/upload-artifact@1111111111111111111111111111111111111111'
+      })
+  ],
+  [
+    'GitHub action cache',
+    (workflow) =>
+      workflow.jobs.policy.steps.push({
+        uses: 'actions/cache@1111111111111111111111111111111111111111'
+      })
+  ],
+  [
+    'setup-node cache',
     (workflow) => {
-      const job = workflow.jobs['desktop-linux-x64']
-      const upload = job.steps.find((step) => step.uses?.includes('upload-artifact'))
-      job.steps.push(structuredClone(upload))
+      workflow.jobs['desktop-linux-x64'].steps.find((step) =>
+        step.uses?.startsWith('actions/setup-node@')
+      ).with.cache = 'pnpm'
     }
   ],
   [
-    'upload output path drift',
-    (workflow) =>
-      (workflow.jobs['desktop-linux-x64'].steps.find((step) =>
-        step.uses?.includes('upload-artifact')
-      ).with.path = 'candidate-out/other')
-  ],
-  [
-    'upload output name drift',
-    (workflow) =>
-      (workflow.jobs['desktop-linux-x64'].steps.find((step) =>
-        step.uses?.includes('upload-artifact')
-      ).with.name = 'other-name')
-  ],
-  [
-    'unbounded artifact retention',
+    'mutable MinIO prefix',
     (workflow) => {
-      const upload = Object.values(workflow.jobs)
-        .flatMap((job) => job.steps ?? [])
-        .find((step) => step.uses?.startsWith('actions/upload-artifact@'))
-      delete upload.with['retention-days']
+      const retention = workflow.jobs['desktop-linux-x64'].steps.find((step) =>
+        step.name?.startsWith('Retain immutable')
+      )
+      retention.run = retention.run.replace('--prefix candidate-artifacts', '--prefix latest')
     }
+  ],
+  [
+    'missing MinIO readback retention',
+    (workflow) =>
+      (workflow.jobs['desktop-linux-x64'].steps = workflow.jobs['desktop-linux-x64'].steps.filter(
+        (step) => !step.name?.startsWith('Retain immutable')
+      ))
   ],
   [
     'missing provenance verification',
-    (workflow) => {
-      const job = Object.values(workflow.jobs).find((candidate) =>
-        candidate.steps?.some((step) => step.uses?.startsWith('actions/upload-artifact@'))
-      )
-      job.steps = job.steps.filter(
+    (workflow) =>
+      (workflow.jobs['desktop-linux-x64'].steps = workflow.jobs['desktop-linux-x64'].steps.filter(
         (step) => !step.run?.includes('candidate-artifact-provenance.mjs verify')
-      )
-    }
+      ))
   ]
 ]
 
@@ -235,14 +242,17 @@ test('disables Electron Builder publishing, signing, and update metadata', () =>
   ])
 })
 
-test('invokes the dual-architecture macOS candidate target', async () => {
-  const { workflow } = await fixture()
-  const step = workflow.jobs['desktop-macos'].steps.find(
-    (candidate) => candidate.name === 'Build unpublished macOS packages'
-  )
-  expect(step.run.replace(/\s+/g, ' ').trim()).toBe(
-    'pnpm run ensure:electron-runtime && pnpm exec electron-builder --config ../config/electron-builder-candidate.config.cjs --mac --x64 --arm64 --publish never'
-  )
+test('keeps unsupported build platforms explicitly absent from execution', async () => {
+  const { workflow, policy } = await fixture()
+  expect(Object.keys(workflow.jobs).sort()).toEqual(['desktop-linux-x64', 'policy'])
+  expect(Object.keys(policy.platforms).sort()).toEqual([
+    'desktop-linux-arm64',
+    'desktop-linux-x64',
+    'desktop-macos',
+    'desktop-windows-x64',
+    'mobile-android',
+    'mobile-ios-simulator'
+  ])
 })
 
 test('pins every workflow source checkout to the policy revision', async () => {

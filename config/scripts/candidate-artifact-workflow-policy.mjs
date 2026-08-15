@@ -9,67 +9,34 @@ const workflowRevision = '${{ github.workflow_sha }}'
 const checkoutAction = 'actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683'
 const pnpmAction = 'pnpm/action-setup@f2b2b233b538f500472c7274c7012f57857d8ce0'
 const nodeAction = 'actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8'
-const uploadAction = 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02'
-const approvedActions = new Set([checkoutAction, pnpmAction, nodeAction, uploadAction])
-const expectedWorkflowDigest = '97831018401f0ed46d66ebc0876e585d725fcdec260ddc1d625e6f61ed4f81a1'
-
-const buildJobs = {
-  'desktop-linux-x64': {
-    runner: 'ubuntu-latest',
-    timeout: 120,
-    buildStep: 'Build unpublished Linux packages',
-    buildRun:
-      'pnpm exec electron-builder --config ../config/electron-builder-candidate.config.cjs --linux deb --x64 --publish never',
-    stageStep: 'Stage exact Linux x64 allowlist',
-    stageHash: '15d1841adb5582d78d3b8fce3cf5baffb63937fedf5eb91470e591069e949888',
-    provenanceLabel: 'Linux x64'
-  },
-  'desktop-linux-arm64': {
-    runner: 'ubuntu-24.04-arm',
-    timeout: 120,
-    buildStep: 'Build unpublished Linux packages',
-    buildRun:
-      'pnpm exec electron-builder --config ../config/electron-builder-candidate.config.cjs --linux deb --arm64 --publish never',
-    stageStep: 'Stage exact Linux arm64 allowlist',
-    stageHash: '98794e1db8ff12b47a45ac3fe58c86cbf5bdea19be82c198f7a306bd1e788908',
-    provenanceLabel: 'Linux arm64'
-  },
-  'desktop-windows-x64': {
-    runner: 'windows-2022',
-    timeout: 120,
-    buildStep: 'Build unpublished Windows installer',
-    buildRun:
-      'pnpm exec electron-builder --config ../config/electron-builder-candidate.config.cjs --win --x64 --publish never',
-    stageStep: 'Stage exact unsigned Windows allowlist',
-    stageHash: '3d0e9b40a86a60eeab1bb3643b01a2fc1544ff27706700dec77a7b63a5b70d87',
-    provenanceLabel: 'Windows'
-  },
-  'desktop-macos': {
-    runner: 'macos-26',
-    timeout: 180,
-    buildStep: 'Build unpublished macOS packages',
-    buildRun:
-      'pnpm run ensure:electron-runtime && pnpm exec electron-builder --config ../config/electron-builder-candidate.config.cjs --mac --x64 --arm64 --publish never',
-    stageStep: 'Stage exact macOS allowlist',
-    stageHash: '06b5941e03aba08edad4378e63ec48c9e56436e2bdc5e960b8dc008f7c9eeded',
-    provenanceLabel: 'macOS'
-  },
-  'mobile-android': {
-    runner: 'ubuntu-latest',
-    timeout: 90,
-    provenanceLabel: 'Android'
-  },
-  'mobile-ios-simulator': {
-    runner: 'macos-26',
-    timeout: 120,
-    provenanceLabel: 'iOS simulator'
-  }
+const approvedActions = new Set([checkoutAction, pnpmAction, nodeAction])
+const expectedWorkflowDigest = 'e9ede3191d3b83054ec32fc74c7401eeb708c6e1ebaa74916646eedd020c6a9f'
+const expectedPlatforms = [
+  'desktop-linux-arm64',
+  'desktop-linux-x64',
+  'desktop-macos',
+  'desktop-windows-x64',
+  'mobile-android',
+  'mobile-ios-simulator'
+]
+const linuxContract = {
+  runner: 'orca-source-ci',
+  timeout: 120,
+  buildStep: 'Build unpublished Linux packages',
+  buildRun:
+    'pnpm exec electron-builder --config ../config/electron-builder-candidate.config.cjs --linux deb --x64 --publish never',
+  stageStep: 'Stage exact Linux x64 allowlist',
+  stageHash: '15d1841adb5582d78d3b8fce3cf5baffb63937fedf5eb91470e591069e949888',
+  provenanceLabel: 'Linux x64'
 }
 
 const forbiddenSurfacePatterns = [
   /\$\{\{\s*secrets\./i,
   /\$\{\{[^}]*\bgithub\.token\b/i,
-  /\b(?:ANDROID_KEYSTORE_PASSWORD|APPLE_API_KEY|APPLE_APP_SPECIFIC_PASSWORD|APPLE_ID|APPLE_TEAM_ID|ASC_API_KEY_P8|ASC_ISSUER_ID|ASC_KEY_ID|CSC_KEY_PASSWORD|CSC_LINK|CSC_NAME|EXPO_TOKEN|GH_TOKEN|GITHUB_TOKEN|GOOGLE_PLAY_SERVICE_ACCOUNT_JSON|IOS_DIST_CERT|IOS_DIST_CERT_P12|IOS_DIST_CERT_PASSWORD|KEYCHAIN_PASSWORD|MAC_CERTS|MAC_CERTS_PASSWORD|MATCH_PASSWORD|ORCA_POSTHOG_WRITE_KEY|SIGNPATH_API_TOKEN|WIN_CSC_LINK|WRITE_KEY)\b/i,
+  /\b(?:GITHUB_TOKEN|GH_TOKEN)\b/i,
+  /\b(?:ubuntu-latest|ubuntu-[0-9]|windows-[0-9]|macos-[0-9]|blacksmith)\b/i,
+  /actions\/(?:upload-artifact|download-artifact|cache)@/i,
+  /setup-node[^}]*["']?cache["']?\s*:/i,
   /--publish\s+(?!never\b)\S+/i,
   /\b(?:git\s+(?:push|tag)|gh\s+(?:api|release)|docker\s+push|podman\s+push)\b/i,
   /\b(?:npm|pnpm|yarn|cargo)\s+publish\b/i,
@@ -90,9 +57,7 @@ function assertExact(actual, expected, label) {
 }
 
 function assertExactKeys(value, expected, label) {
-  const actual = Object.keys(asObject(value, label)).sort()
-  const wanted = [...expected].sort()
-  assertExact(actual, wanted, `${label} keys`)
+  assertExact(Object.keys(asObject(value, label)).sort(), [...expected].sort(), `${label} keys`)
 }
 
 function normalized(value) {
@@ -118,8 +83,12 @@ function validateWorkflowShape(workflow, policy) {
     'workflow concurrency'
   )
   const jobs = asObject(workflow.jobs, 'jobs')
-  assertExact(Object.keys(jobs).sort(), ['policy', ...Object.keys(buildJobs)].sort(), 'job set')
-  assertExact(Object.keys(policy.platforms).sort(), Object.keys(buildJobs).sort(), 'platform set')
+  assertExact(Object.keys(jobs).sort(), ['desktop-linux-x64', 'policy'], 'job set')
+  assertExact(
+    Object.keys(policy.platforms).sort(),
+    expectedPlatforms,
+    'qualified platform policy set'
+  )
   return jobs
 }
 
@@ -136,20 +105,11 @@ function validateJobShape(name, job, contract) {
     throw new Error(`${name} must have needs: policy`)
   }
   assertExact(job['runs-on'], contract.runner, `${name} runner`)
-  if (
-    !Number.isInteger(job['timeout-minutes']) ||
-    job['timeout-minutes'] < 1 ||
-    job['timeout-minutes'] > 180 ||
-    job['timeout-minutes'] !== contract.timeout
-  ) {
-    throw new Error(`${name} timeout-minutes must be the expected integer from 1 to 180`)
-  }
+  assertExact(job['timeout-minutes'], contract.timeout, `${name} timeout`)
   if (!Array.isArray(job.steps) || job.steps.length === 0) {
     throw new Error(`${name} must contain steps`)
   }
-  for (const step of job.steps) {
-    asObject(step, `${name} step`)
-  }
+  job.steps.forEach((step) => asObject(step, `${name} step`))
 }
 
 function validateCheckouts(name, job, sourceRevision) {
@@ -177,94 +137,66 @@ function validateCheckouts(name, job, sourceRevision) {
   )
 }
 
-function validateActions(name, job, platform) {
+function validateActions(name, job) {
   const actionSteps = job.steps.filter((step) => step.uses !== undefined)
   for (const step of actionSteps) {
     if (!approvedActions.has(step.uses)) {
       throw new Error(`${name} uses an unapproved action: ${step.uses}`)
     }
   }
-  const pnpmSteps = actionSteps.filter((step) => step.uses === pnpmAction)
   assertExact(
-    pnpmSteps,
+    actionSteps.filter((step) => step.uses === pnpmAction),
     [{ name: 'Setup pnpm', uses: pnpmAction, with: { run_install: false } }],
     `${name} pnpm action`
   )
-  const nodeWith =
-    name === 'policy'
-      ? { 'node-version-file': 'package.json' }
-      : platform.startsWith('desktop-')
-        ? {
-            'node-version-file': 'source/package.json',
-            cache: 'pnpm',
-            'cache-dependency-path': 'source/pnpm-lock.yaml'
-          }
-        : {
-            'node-version': 24,
-            cache: 'pnpm',
-            'cache-dependency-path': 'source/mobile/pnpm-lock.yaml'
-          }
-  const nodeSteps = actionSteps.filter((step) => step.uses === nodeAction)
   assertExact(
-    nodeSteps,
-    [{ name: 'Setup Node.js', uses: nodeAction, with: nodeWith }],
+    actionSteps.filter((step) => step.uses === nodeAction),
+    [
+      {
+        name: 'Setup Node.js',
+        uses: nodeAction,
+        with: { 'node-version-file': name === 'policy' ? 'package.json' : 'source/package.json' }
+      }
+    ],
     `${name} Node action`
   )
 }
 
-function validateProvenance(job, platform, label) {
-  const artifactDirectory = `candidate-out/${platform}`
+function validateProvenance(job) {
+  const artifactDirectory = 'candidate-out/desktop-linux-x64'
   for (const command of ['Write', 'Verify']) {
-    const step = findStep(job, `${command} ${label} provenance`)
-    assertExactKeys(step, ['name', 'run'], `${platform} ${command.toLowerCase()} provenance step`)
-    const expected =
-      `node config/scripts/candidate-artifact-provenance.mjs ${command.toLowerCase()} ` +
-      `--platform ${platform} --source source --artifacts ${artifactDirectory} ` +
-      `--workflow-revision "${workflowRevision}"`
+    const step = findStep(job, `${command} Linux x64 provenance`)
+    assertExactKeys(step, ['name', 'run'], `${command.toLowerCase()} provenance step`)
     assertExact(
       normalized(step.run),
-      expected,
-      `${platform} ${command.toLowerCase()} provenance command`
+      `node config/scripts/candidate-artifact-provenance.mjs ${command.toLowerCase()} ` +
+        `--platform desktop-linux-x64 --source source --artifacts ${artifactDirectory} ` +
+        `--workflow-revision "${workflowRevision}"`,
+      `${command.toLowerCase()} provenance command`
     )
   }
 }
 
-function validateUpload(job, platform) {
-  const uploads = job.steps.filter((step) => step.uses === uploadAction)
+function validateRetention(job) {
+  const step = findStep(job, 'Retain immutable Linux x64 candidates in MinIO')
+  assertExactKeys(step, ['name', 'run'], 'MinIO retention step')
   assertExact(
-    uploads,
-    [
-      {
-        name: platform === 'desktop-macos' ? 'Upload macOS candidates' : findUploadName(platform),
-        uses: uploadAction,
-        with: {
-          name: `orca-candidate-${platform}`,
-          path: `candidate-out/${platform}`,
-          'retention-days': 7,
-          'if-no-files-found': 'error'
-        }
-      }
-    ],
-    `${platform} upload`
+    normalized(step.run),
+    'node config/scripts/minio-artifact-retention.mjs --prefix candidate-artifacts ' +
+      '--source-sha "$(git -C source rev-parse HEAD)" ' +
+      '--workflow-file .github/workflows/candidate-artifacts.yml ' +
+      '--run-id "${{ github.run_id }}" --run-attempt "${{ github.run_attempt }}" ' +
+      '--directory candidate-out/desktop-linux-x64',
+    'MinIO retention command'
   )
 }
 
-function findUploadName(platform) {
-  return {
-    'desktop-linux-x64': 'Upload Linux x64 candidates',
-    'desktop-linux-arm64': 'Upload Linux arm64 candidates',
-    'desktop-windows-x64': 'Upload Windows candidate',
-    'mobile-android': 'Upload Android candidate',
-    'mobile-ios-simulator': 'Upload iOS simulator candidate'
-  }[platform]
-}
-
-function validateDesktopCommands(job, contract) {
-  const build = findStep(job, contract.buildStep)
-  assertExact(normalized(build.run), contract.buildRun, `${contract.buildStep} command`)
-  const stage = findStep(job, contract.stageStep)
+function validateDesktopCommands(job) {
+  const build = findStep(job, linuxContract.buildStep)
+  assertExact(normalized(build.run), linuxContract.buildRun, `${linuxContract.buildStep} command`)
+  const stage = findStep(job, linuxContract.stageStep)
   const stageHash = createHash('sha256').update(stage.run).digest('hex')
-  assertExact(stageHash, contract.stageHash, `${contract.stageStep} update-metadata assertions`)
+  assertExact(stageHash, linuxContract.stageHash, `${linuxContract.stageStep} assertions`)
 }
 
 function validateSourceRevisionLocations(workflow, policy, jobs) {
@@ -289,7 +221,7 @@ function validateSerializedSurface(workflow) {
   for (const pattern of forbiddenSurfacePatterns) {
     if (pattern.test(serialized)) {
       throw new Error(
-        `Candidate workflow contains forbidden credential or publishing surface: ${pattern}`
+        `Candidate workflow contains forbidden execution or storage surface: ${pattern}`
       )
     }
   }
@@ -301,20 +233,14 @@ export function validateCandidateWorkflow(workflow, policy) {
   validateSerializedSurface(workflow)
   for (const [name, jobValue] of Object.entries(jobs)) {
     const job = asObject(jobValue, `job ${name}`)
-    const contract = name === 'policy' ? { runner: 'ubuntu-latest', timeout: 15 } : buildJobs[name]
+    const contract = name === 'policy' ? { runner: 'orca-source-ci', timeout: 15 } : linuxContract
     validateJobShape(name, job, contract)
     validateCheckouts(name, job, policy.sourceRevision)
-    validateActions(name, job, name)
-    if (name === 'policy') {
-      if (job.steps.some((step) => step.uses === uploadAction)) {
-        throw new Error('Policy job must not upload artifacts')
-      }
-      continue
-    }
-    validateProvenance(job, name, contract.provenanceLabel)
-    validateUpload(job, name)
-    if (name.startsWith('desktop-')) {
-      validateDesktopCommands(job, contract)
+    validateActions(name, job)
+    if (name === 'desktop-linux-x64') {
+      validateProvenance(job)
+      validateRetention(job)
+      validateDesktopCommands(job)
     }
   }
   validateSourceRevisionLocations(workflow, policy, jobs)

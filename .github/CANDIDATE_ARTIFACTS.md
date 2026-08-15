@@ -7,36 +7,36 @@ deployment authority.
 
 The workflow-control commit intentionally sits above that runtime source. Lifecycle-envelope schema
 provenance remains contract commit `f910c801aac823bb1b0768e79d1b3c865db295ac`; the runtime source
-contains the later operator-catalog, replay, and durability implementation. Every platform checkout
-continues to build exactly `cc7d1abaef9a1d89675d985b5ff6e1574b998a18`, never the control commit
-that carries this pin.
+contains the later operator-catalog, replay, and durability implementation. Both executable jobs
+checkout exactly `cc7d1abaef9a1d89675d985b5ff6e1574b998a18` as their candidate source,
+never the control commit that carries this pin.
 
 ## Safety boundary
 
 The workflow has only `workflow_dispatch`, uses `contents: read`, disables persisted Git
-credentials, reads no secrets, and pins every external action to a full commit SHA. It does
+credentials, and pins every external action to a full commit SHA. It does
 not create or push a tag, commit, release, registry image, store build, distribution signature,
-or update feed. Every uploaded bundle expires after seven days and fails closed when an
-expected file is missing.
+or update feed. Its only credential surface is the runner-injected, bucket-scoped MinIO identity;
+it never references GitHub repository secrets or GitHub artifact storage.
 
 The Android APK is signed only with Gradle's standard development debug key so Android can
 install it for testing; it is not a distribution signature. The iOS output is an unsigned
 Simulator `.app` archive and cannot be installed on a physical device. The macOS and Windows
 packages are unsigned and may be blocked or warn when opened.
 
-## Output bundles
+## Immediate runnable slice
 
-Each platform bundle contains only the exact filenames declared in
+Only the policy job and Linux x64 build run now, both on the exact `orca-source-ci` ARC label.
+Linux ARM64, Windows, macOS, Android, and iOS jobs are intentionally absent until equivalent
+private runners and storage paths are reviewed. Their qualification declarations remain in
+`config/candidate-artifacts.json`; preserving policy does not make those platforms executable.
+
+The Linux x64 bundle contains only its exact filename declared in
 `config/candidate-artifacts.json` plus `provenance.json`:
 
 - Linux x64: `orca-hub-linux-x64.deb`, also usable as the desktop candidate. The `.deb` is the `orca-ide` package
   format defined by `config/electron-builder.config.cjs` for a later `images/orca-hub` image
   build.
-- Linux arm64: an `orca-ide` `.deb` desktop candidate.
-- Windows x64: an unsigned NSIS installer.
-- macOS: unsigned x64 and arm64 DMG candidates.
-- Android: an Expo/Gradle debug APK.
-- iOS: an unsigned Xcode Simulator application archive.
 
 The provenance file records the pinned source revision, workflow revision, SHA-256 hashes of
 both pnpm lockfiles, exact artifact byte sizes and SHA-256 hashes, installability, signing
@@ -44,10 +44,15 @@ state, and the fact that nothing was published or emitted as update metadata. It
 deterministic for the same workflow revision and artifact bytes; it intentionally contains no
 clock time or runner-generated identifier.
 
+The private MinIO retention step computes a digest of each file and the workflow, then uploads with
+curl SigV4 to a non-overwriting key containing the full source SHA, workflow digest, run ID, run
+attempt, and content SHA. It downloads every object again and fails unless the readback digest
+matches. MinIO bucket versioning supplies durable history; no `upload-artifact`,
+`download-artifact`, `actions/cache`, or setup-node cache is used.
+
 These artifacts prove that pinned source and pinned dependency graphs completed the repository's
-native packaging commands on the named CI platform, and bind the resulting bytes to checksums.
-GitHub-hosted runner labels and their installed toolchains are mutable, so this provenance is a
-source/lockfile/artifact checksum binding, not a claim of byte-for-byte reproducibility across
+Linux x64 packaging command on the private runner and bind the resulting bytes to checksums. This
+is a source/lockfile/artifact checksum binding, not a claim of byte-for-byte reproducibility across
 runner image updates.
 They do not prove release approval, identity, notarization, malware review, production
 configuration, compatibility with every target host, or authorization to deploy.
@@ -74,16 +79,17 @@ all normal review gates plus credentials held outside this workflow:
 Run the targeted checks from the repository root:
 
 ```sh
-pnpm exec vitest run --config config/vitest.config.ts config/scripts/candidate-artifact-workflow-policy.test.mjs
+pnpm exec vitest run --config config/vitest.config.ts config/scripts/candidate-artifact-workflow-policy.test.mjs config/scripts/minio-artifact-retention.test.mjs
 pnpm exec vitest run --config config/vitest.config.ts config/scripts/candidate-artifact-policy.test.mjs
 node config/scripts/candidate-artifact-workflow-policy.mjs
 actionlint .github/workflows/candidate-artifacts.yml
-pnpm exec oxfmt --check config/candidate-artifacts.json config/electron-builder-candidate.config.cjs config/scripts/candidate-artifact-policy.mjs config/scripts/candidate-artifact-policy.test.mjs config/scripts/candidate-artifact-provenance.mjs config/scripts/candidate-artifact-workflow-policy.mjs config/scripts/candidate-artifact-workflow-policy.test.mjs .github/CANDIDATE_ARTIFACTS.md
+pnpm exec oxfmt --check config/candidate-artifacts.json config/electron-builder-candidate.config.cjs config/scripts/candidate-artifact-policy.mjs config/scripts/candidate-artifact-policy.test.mjs config/scripts/candidate-artifact-provenance.mjs config/scripts/candidate-artifact-workflow-policy.mjs config/scripts/candidate-artifact-workflow-policy.test.mjs config/scripts/minio-artifact-retention.mjs config/scripts/minio-artifact-retention.test.mjs .github/CANDIDATE_ARTIFACTS.md
 ```
 
 The adversarial tests reject push, pull-request, or schedule triggers; mutable action refs;
-write permissions; publishing or signing commands; secret access; unbounded uploads; missing
-provenance validation; extra artifacts; and missing provenance fields.
+write permissions; publishing or signing commands; GitHub-hosted runners; GitHub artifact or cache
+storage; mutable retention keys; missing provenance validation; extra artifacts; and missing
+provenance fields or MinIO readback verification.
 Policy validation also rejects unknown fields or platforms, path traversal, symlinked source
 lockfiles, and non-file artifact entries.
 

@@ -15,7 +15,7 @@ concurrency:
 jobs:
   readiness:
     name: simulate official main merge
-    runs-on: ubuntu-latest
+    runs-on: orca-source-ci
     timeout-minutes: 20
 
     steps:
@@ -37,7 +37,6 @@ jobs:
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: package.json
-          cache: pnpm
 
       - name: Install script-free dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts
@@ -62,14 +61,16 @@ jobs:
           --json artifacts/upstream-sync/report.json
           --markdown artifacts/upstream-sync/report.md
 
-      - name: Retain bounded readiness report
+      - name: Retain immutable readiness report in MinIO
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: upstream-sync-readiness-${{ github.sha }}
-          path: artifacts/upstream-sync/
-          if-no-files-found: error
-          retention-days: 14
+        run: >-
+          node config/scripts/minio-artifact-retention.mjs
+          --prefix upstream-sync-readiness
+          --source-sha "${{ github.sha }}"
+          --workflow-file .github/workflows/daily-upstream-sync.yml
+          --run-id "${{ github.run_id }}"
+          --run-attempt "${{ github.run_attempt }}"
+          --directory artifacts/upstream-sync
 
       - name: Fail after preserving a non-mergeable report
         if: always() && steps.simulation.outcome != 'success'

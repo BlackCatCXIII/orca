@@ -24,14 +24,16 @@ describe('daily upstream sync workflow', () => {
     )
   })
 
-  it('rejects moving checkout refs and unbounded artifacts', () => {
+  it('rejects moving checkout refs and mutable retention keys', () => {
     const source = readFileSync(workflowPath, 'utf8')
     expect(
       validateDailyUpstreamSyncWorkflow(source.replace('ref: ${{ github.sha }}', 'ref: main'))
     ).toContain('checkout ref must be github.sha')
     expect(
-      validateDailyUpstreamSyncWorkflow(source.replace('retention-days: 14', 'retention-days: 90'))
-    ).toContain('report retention must be an integer no greater than 14 days')
+      validateDailyUpstreamSyncWorkflow(
+        source.replace('--prefix upstream-sync-readiness', '--prefix latest')
+      )
+    ).toContain('readiness report must use the exact immutable MinIO retention command')
   })
 
   it('rejects write-oriented triggers and unreviewed actions', () => {
@@ -42,7 +44,7 @@ describe('daily upstream sync workflow', () => {
     expect(
       validateDailyUpstreamSyncWorkflow(
         source.replace(
-          'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a',
+          'actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38',
           'third-party/publish@v1'
         )
       )
@@ -60,7 +62,33 @@ describe('daily upstream sync workflow', () => {
     )
   })
 
-  it('requires the exact terminal failure gate immediately after report upload', () => {
+  it('rejects hosted runners, GitHub artifacts, and GitHub dependency caches', () => {
+    const source = readFileSync(workflowPath, 'utf8')
+    expect(
+      validateDailyUpstreamSyncWorkflow(source.replace('orca-source-ci', 'ubuntu-latest')).join(
+        '\n'
+      )
+    ).toMatch(/job must use orca-source-ci|forbidden workflow capability/)
+    expect(
+      validateDailyUpstreamSyncWorkflow(
+        source.replace(
+          '      - name: Install script-free dependencies',
+          '      - uses: actions/upload-artifact@1111111111111111111111111111111111111111\n\n' +
+            '      - name: Install script-free dependencies'
+        )
+      ).join('\n')
+    ).toMatch(/approved 40-hex commit pins|forbidden workflow capability/)
+    expect(
+      validateDailyUpstreamSyncWorkflow(
+        source.replace(
+          '          node-version-file: package.json',
+          '          node-version-file: package.json\n          cache: pnpm'
+        )
+      )
+    ).toContain('setup-node must not use GitHub dependency caching')
+  })
+
+  it('requires the exact terminal failure gate immediately after MinIO retention', () => {
     const source = readFileSync(workflowPath, 'utf8')
     const neutralized = source.replace('run: exit 1', 'run: exit 0')
     const deleted = source.replace(
@@ -88,7 +116,7 @@ describe('daily upstream sync workflow', () => {
       neutralizedCondition
     ]) {
       expect(validateDailyUpstreamSyncWorkflow(mutation).join('\n')).toMatch(
-        /report upload must be immediately before|exact non-success failure gate/
+        /MinIO retention must be immediately before|exact non-success failure gate/
       )
     }
   })

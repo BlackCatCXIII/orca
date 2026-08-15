@@ -7,8 +7,7 @@ const WORKFLOW_PATH = '.github/workflows/daily-upstream-sync.yml'
 const ACTION_PINS = new Set([
   'actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803',
   'pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86',
-  'actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38',
-  'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a'
+  'actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38'
 ])
 const FORBIDDEN_TEXT = [
   /\bsecrets\s*\./i,
@@ -17,7 +16,9 @@ const FORBIDDEN_TEXT = [
   /\bgit\s+push\b/i,
   /\bgh\s+(?:pr|issue|release)\b/i,
   /\b(?:kubectl|flux)\b/i,
-  /\bdocker\s+push\b/i
+  /\bdocker\s+push\b/i,
+  /\b(?:ubuntu-latest|ubuntu-[0-9]|windows-[0-9]|macos-[0-9]|blacksmith)\b/i,
+  /actions\/(?:upload-artifact|download-artifact|cache)@/i
 ]
 
 function requireValue(condition, message, failures) {
@@ -44,6 +45,7 @@ export function validateDailyUpstreamSyncWorkflow(source) {
   const jobs = Object.values(workflow.jobs ?? {})
   requireValue(jobs.length === 1, 'workflow must contain exactly one job', failures)
   const job = jobs[0] ?? {}
+  requireValue(job['runs-on'] === 'orca-source-ci', 'job must use orca-source-ci', failures)
   requireValue(job.permissions === undefined, 'job must not override permissions', failures)
   requireValue(
     job['continue-on-error'] === undefined,
@@ -67,6 +69,12 @@ export function validateDailyUpstreamSyncWorkflow(source) {
     failures
   )
   requireValue(checkout.token === '', 'checkout token must be explicitly empty', failures)
+  const node = steps.find((step) => step.uses?.startsWith('actions/setup-node@'))
+  requireValue(
+    JSON.stringify(node?.with) === JSON.stringify({ 'node-version-file': 'package.json' }),
+    'setup-node must not use GitHub dependency caching',
+    failures
+  )
   const simulation = steps.find((step) => step.id === 'simulation')
   requireValue(
     simulation?.['continue-on-error'] === true,
@@ -88,28 +96,32 @@ export function validateDailyUpstreamSyncWorkflow(source) {
     'official upstream ref is not explicit',
     failures
   )
-  const artifact = steps.find((step) => step.uses?.startsWith('actions/upload-artifact@'))
-  requireValue(artifact?.if === 'always()', 'report artifact must upload on failure', failures)
+  const retention = steps.find((step) => step.name === 'Retain immutable readiness report in MinIO')
   requireValue(
-    artifact?.['continue-on-error'] === undefined,
-    'report upload failures must remain fatal',
+    retention?.if === 'always()',
+    'readiness report must be retained on failure',
     failures
   )
   requireValue(
-    Number.isInteger(artifact?.with?.['retention-days']) && artifact.with['retention-days'] <= 14,
-    'report retention must be an integer no greater than 14 days',
+    retention?.['continue-on-error'] === undefined,
+    'MinIO retention failures must remain fatal',
     failures
   )
   requireValue(
-    artifact?.with?.['if-no-files-found'] === 'error',
-    'missing reports must fail',
+    retention?.run?.replace(/\s+/g, ' ').trim() ===
+      'node config/scripts/minio-artifact-retention.mjs --prefix upstream-sync-readiness ' +
+        '--source-sha "${{ github.sha }}" ' +
+        '--workflow-file .github/workflows/daily-upstream-sync.yml ' +
+        '--run-id "${{ github.run_id }}" --run-attempt "${{ github.run_attempt }}" ' +
+        '--directory artifacts/upstream-sync',
+    'readiness report must use the exact immutable MinIO retention command',
     failures
   )
-  const artifactIndex = steps.indexOf(artifact)
+  const retentionIndex = steps.indexOf(retention)
   const terminalGate = steps.at(-1)
   requireValue(
-    artifactIndex === steps.length - 2,
-    'report upload must be immediately before the terminal failure gate',
+    retentionIndex === steps.length - 2,
+    'MinIO retention must be immediately before the terminal failure gate',
     failures
   )
   requireValue(
