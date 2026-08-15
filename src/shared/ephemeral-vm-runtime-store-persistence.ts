@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs'
+import { existsSync, lstatSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   writeCriticalSecureJsonFileWithinLimit,
@@ -50,15 +50,17 @@ export function readEphemeralVmRuntimeStore(
   authoritativeOperatorRead = false
 ): LoadedEphemeralVmRuntimeStore {
   const path = getEphemeralVmRuntimeStorePath(userDataPath)
-  if (!existsSync(path)) {
-    return {
-      store: { version: 1, runtimes: [] },
-      features: readEphemeralVmRuntimeFeatureStore(userDataPath)
-    }
-  }
   try {
     let decoded: ReturnType<typeof parseEphemeralVmRuntimeStore>
     if (authoritativeOperatorRead) {
+      try {
+        lstatSync(path)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+          return emptyEphemeralVmRuntimeStore(userDataPath)
+        }
+        throw error
+      }
       decoded = readConditionallyAuthoritativeSecureFileSync(
         path,
         MAX_EPHEMERAL_VM_RUNTIME_STORE_FILE_BYTES,
@@ -71,6 +73,9 @@ export function readEphemeralVmRuntimeStore(
         }
       )
     } else {
+      if (!existsSync(path)) {
+        return emptyEphemeralVmRuntimeStore(userDataPath)
+      }
       hardenExistingSecureFile(path)
       decoded = parseEphemeralVmRuntimeStore(
         readNodeFileSyncWithinLimit(path, MAX_EPHEMERAL_VM_RUNTIME_STORE_FILE_BYTES).buffer
@@ -99,6 +104,13 @@ export function readEphemeralVmRuntimeStore(
       'runtime_error',
       `Could not read Orca ephemeral VM runtimes at ${path}; the file is invalid.`
     )
+  }
+}
+
+function emptyEphemeralVmRuntimeStore(userDataPath: string): LoadedEphemeralVmRuntimeStore {
+  return {
+    store: { version: 1, runtimes: [] },
+    features: readEphemeralVmRuntimeFeatureStore(userDataPath)
   }
 }
 
