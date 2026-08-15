@@ -1,19 +1,29 @@
-import { createHash } from 'node:crypto'
-import { resolve } from 'node:path'
 import type { EnvironmentRecipeRuntime } from '../shared/environment-recipe-runtime-rpc'
 import {
   completeDurableEnvironmentRecipeMutation,
   EnvironmentRecipeOperationJournalError,
   prepareDurableEnvironmentRecipeMutation,
-  readDurableEnvironmentRecipeMutation,
   terminateDurableEnvironmentRecipeMutation,
   type DurableEnvironmentRecipeMutation,
   type EnvironmentRecipeMutationIdentity
 } from './environment-recipe-operation-journal'
+import {
+  canonicalEnvironmentRecipeMutationJson,
+  environmentRecipeMutationRequestSha256,
+  normalizeEnvironmentRecipeProfilePath
+} from './environment-recipe-mutation-identity'
+import {
+  EnvironmentRecipeProvisionReplayConflict,
+  resolveEnvironmentRecipeProvisionReplay
+} from './environment-recipe-provision-replay'
 
 const MAX_MUTATION_ENTRIES = 256
 const MAX_ERROR_CHARS = 512
-const MUTATION_FINGERPRINT_DOMAIN = 'orca-environment-recipe-mutation-v1\0'
+
+export {
+  environmentRecipeMutationRequestSha256,
+  environmentRecipeMutationRuntimeId
+} from './environment-recipe-mutation-identity'
 
 type MutationEntry = {
   fingerprint: string
@@ -27,6 +37,7 @@ const runtimeOperationTails = new Map<string, Promise<void>>()
 export type EnvironmentRecipeMutationControl = {
   readonly requestSha256: string
   readonly provisionRef?: string
+  readonly runtimeId?: string
   persistProvisionRef: (ref: string, runtimeId: string) => void
   markProvisionTerminal: () => void
 }
@@ -53,8 +64,8 @@ export function runIdempotentEnvironmentRecipeMutation<T extends { clientMutatio
   operation: (control: EnvironmentRecipeMutationControl) => Promise<EnvironmentRecipeRuntime>,
   options: { operatorRecipeCatalogSha256?: string } = {}
 ): Promise<EnvironmentRecipeRuntime> {
-  const key = `${normalizeProfilePath(profilePath)}\0${pairedDeviceId}\0${method}\0${params.clientMutationId}`
-  const fingerprint = canonicalMutationJson(params)
+  const key = `${normalizeEnvironmentRecipeProfilePath(profilePath)}\0${pairedDeviceId}\0${method}\0${params.clientMutationId}`
+  const fingerprint = canonicalEnvironmentRecipeMutationJson(params)
   const requestSha256 = environmentRecipeMutationRequestSha256(params)
   const existing = mutationEntries.get(key)
   if (existing) {
@@ -67,14 +78,15 @@ export function runIdempotentEnvironmentRecipeMutation<T extends { clientMutatio
     return existing.promise
   }
   const identity = { pairedDeviceId, method, clientMutationId: params.clientMutationId }
-  let durable = options.operatorRecipeCatalogSha256
-    ? readDurableMutationOrThrow(
+  const replay = options.operatorRecipeCatalogSha256
+    ? readProvisionReplayOrThrow(
         profilePath,
         identity,
         requestSha256,
         options.operatorRecipeCatalogSha256
       )
     : null
+  let durable = replay?.durable ?? null
   evictSettledMutation()
   if (mutationEntries.size >= MAX_MUTATION_ENTRIES) {
     throw new EnvironmentRecipeRpcError(
@@ -84,7 +96,8 @@ export function runIdempotentEnvironmentRecipeMutation<T extends { clientMutatio
   }
   const control: EnvironmentRecipeMutationControl = {
     requestSha256,
-    provisionRef: durable?.provisionRef,
+    provisionRef: replay?.provisionRef,
+    runtimeId: replay?.runtimeId,
     persistProvisionRef: (ref, runtimeId) => {
       if (!options.operatorRecipeCatalogSha256) {
         return
@@ -152,51 +165,25 @@ export function runIdempotentEnvironmentRecipeMutation<T extends { clientMutatio
   return entry.promise
 }
 
-export function environmentRecipeMutationRequestSha256(params: object): string {
-  return createHash('sha256')
-    .update(MUTATION_FINGERPRINT_DOMAIN)
-    .update(canonicalMutationJson(params))
-    .digest('hex')
-}
-
-function canonicalMutationJson(value: unknown): string {
-  if (Array.isArray(value)) {
-    return `[${value.map((entry) => canonicalMutationJson(entry ?? null)).join(',')}]`
-  }
-  if (value && typeof value === 'object') {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .filter(([, entry]) => entry !== undefined)
-      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-    return `{${entries
-      .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalMutationJson(entry)}`)
-      .join(',')}}`
-  }
-  return JSON.stringify(value)
-}
-
-function readDurableMutationOrThrow(
+function readProvisionReplayOrThrow(
   profilePath: string,
   identity: EnvironmentRecipeMutationIdentity,
   fingerprint: string,
   operatorRecipeCatalogSha256: string
-): DurableEnvironmentRecipeMutation | null {
-  let durable: DurableEnvironmentRecipeMutation | null
+): ReturnType<typeof resolveEnvironmentRecipeProvisionReplay> {
   try {
-    durable = readDurableEnvironmentRecipeMutation(profilePath, identity)
+    return resolveEnvironmentRecipeProvisionReplay(
+      profilePath,
+      identity,
+      fingerprint,
+      operatorRecipeCatalogSha256
+    )
   } catch (error) {
+    if (error instanceof EnvironmentRecipeProvisionReplayConflict) {
+      throw error.terminal ? terminalMutationConflict() : mutationConflict()
+    }
     throw journalFailure(error)
   }
-  if (
-    durable &&
-    (durable.fingerprint !== fingerprint ||
-      durable.operatorRecipeCatalogSha256 !== operatorRecipeCatalogSha256)
-  ) {
-    throw mutationConflict()
-  }
-  if (durable?.state === 'terminal') {
-    throw terminalMutationConflict()
-  }
-  return durable
 }
 
 function prepareDurableMutationOrThrow(
@@ -262,7 +249,7 @@ export async function runSerializedEnvironmentRecipeRuntimeOperation(
   runtimeId: string,
   operation: () => Promise<EnvironmentRecipeRuntime>
 ): Promise<EnvironmentRecipeRuntime> {
-  const key = `${normalizeProfilePath(profilePath)}\0${runtimeId}`
+  const key = `${normalizeEnvironmentRecipeProfilePath(profilePath)}\0${runtimeId}`
   const previous = runtimeOperationTails.get(key) ?? Promise.resolve()
   let release!: () => void
   const tail = new Promise<void>((resolve) => {
@@ -281,22 +268,6 @@ export async function runSerializedEnvironmentRecipeRuntimeOperation(
   }
 }
 
-export function environmentRecipeMutationRuntimeId(
-  profilePath: string,
-  pairedDeviceId: string,
-  clientMutationId: string
-): string {
-  const digest = createHash('sha256')
-    .update(normalizeProfilePath(profilePath))
-    .update('\0')
-    .update(pairedDeviceId)
-    .update('\0')
-    .update(clientMutationId)
-    .digest('hex')
-    .slice(0, 32)
-  return `remote-recipe-${digest}`
-}
-
 export function resetEnvironmentRecipeOperationControlForTests(): void {
   mutationEntries.clear()
   runtimeOperationTails.clear()
@@ -312,9 +283,4 @@ function evictSettledMutation(): void {
       return
     }
   }
-}
-
-function normalizeProfilePath(profilePath: string): string {
-  const normalized = resolve(profilePath)
-  return process.platform === 'win32' ? normalized.toLowerCase() : normalized
 }

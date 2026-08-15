@@ -17,7 +17,7 @@ import {
 } from './ephemeral-vm-runtime-service'
 import { getProvisionedRootRecipeRepoUrl } from '../shared/ephemeral-vm-recipe-repo-url'
 import {
-  environmentRecipeMutationRuntimeId,
+  environmentRecipeMutationRuntimeId as mutationRuntimeId,
   EnvironmentRecipeRpcError,
   resetEnvironmentRecipeOperationControlForTests as resetRpcState,
   runIdempotentEnvironmentRecipeMutation,
@@ -100,11 +100,9 @@ export function provisionEnvironmentRecipeForRpc(
     params,
     async (mutation) => {
       const repo = requireEnvironmentRecipeRepo(deps.runtime, params.repoId)
-      const runtimeId = environmentRecipeMutationRuntimeId(
-        deps.userDataPath,
-        deps.pairedDeviceId,
-        params.clientMutationId
-      )
+      const runtimeId =
+        mutation.runtimeId ??
+        mutationRuntimeId(deps.userDataPath, deps.pairedDeviceId, params.clientMutationId)
       const existing = listEphemeralVmRuntimes(deps.userDataPath).find(
         (runtime) => runtime.id === runtimeId
       )
