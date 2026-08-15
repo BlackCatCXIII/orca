@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { readNodeFileSyncWithinLimit } from '../shared/node-bounded-file-reader'
 import { stringifyJsonWithinByteLimit } from '../shared/node-bounded-json-stringify'
 import { hardenExistingSecureFile, writeSecureFile } from '../shared/secure-file'
-import { listEphemeralVmRuntimes } from '../shared/ephemeral-vm-runtime-store'
+import { listAuthoritativeEphemeralVmRuntimes } from '../shared/ephemeral-vm-runtime-store'
 import type { EphemeralVmRuntimeRecord } from '../shared/ephemeral-vm-runtimes'
 import { parseStrictUtf8Json } from '../shared/strict-json'
 
@@ -74,7 +74,7 @@ export function prepareDurableEnvironmentRecipeMutation(
   if (existing) {
     return existing
   }
-  const runtimes = listEphemeralVmRuntimes(userDataPath)
+  const runtimes = listAuthoritativeEphemeralVmRuntimes(userDataPath)
   const retained = retainCapacityForPreparedEnvironmentRecipeMutation(
     journal.entries,
     maxEntries,
@@ -100,7 +100,10 @@ export function classifyDurableEnvironmentRecipeMutationFromStore(
   userDataPath: string,
   entry: DurableEnvironmentRecipeMutation
 ): DurableEnvironmentRecipeMutationState {
-  return classifyDurableEnvironmentRecipeMutation(entry, listEphemeralVmRuntimes(userDataPath))
+  return classifyDurableEnvironmentRecipeMutation(
+    entry,
+    listAuthoritativeEphemeralVmRuntimes(userDataPath)
+  )
 }
 
 export function classifyDurableEnvironmentRecipeMutation(

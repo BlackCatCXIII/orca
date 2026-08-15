@@ -7,6 +7,7 @@ import {
   writeDurableSecureJsonFileWithinLimit
 } from './bounded-secure-json-file'
 import { hardenExistingSecureFile } from './secure-file'
+import { readConditionallyAuthoritativeSecureFileSync } from './secure-file-authoritative-read'
 import { parseStrictUtf8Json } from './strict-json'
 import {
   EphemeralVmRuntimeRecordSchema,
@@ -38,6 +39,12 @@ export function getEphemeralVmRuntimeStorePath(userDataPath: string): string {
 
 export function listEphemeralVmRuntimes(userDataPath: string): EphemeralVmRuntimeRecord[] {
   return readEphemeralVmRuntimeStore(userDataPath).runtimes
+}
+
+export function listAuthoritativeEphemeralVmRuntimes(
+  userDataPath: string
+): EphemeralVmRuntimeRecord[] {
+  return readEphemeralVmRuntimeStore(userDataPath, true).runtimes
 }
 
 export function upsertEphemeralVmRuntime(
@@ -170,30 +177,48 @@ export function removeEphemeralVmRuntime(
   return existing
 }
 
-function readEphemeralVmRuntimeStore(userDataPath: string): EphemeralVmRuntimeStore {
+function readEphemeralVmRuntimeStore(
+  userDataPath: string,
+  authoritativeOperatorRead = false
+): EphemeralVmRuntimeStore {
   const path = getEphemeralVmRuntimeStorePath(userDataPath)
   if (!existsSync(path)) {
     return { version: 1, runtimes: [] }
   }
   try {
     hardenExistingSecureFile(path)
-    const parsed = EphemeralVmRuntimeStoreSchema.parse(
-      parseStrictUtf8Json(
-        readNodeFileSyncWithinLimit(path, MAX_EPHEMERAL_VM_RUNTIME_STORE_FILE_BYTES).buffer
+    if (authoritativeOperatorRead) {
+      return readConditionallyAuthoritativeSecureFileSync(
+        path,
+        MAX_EPHEMERAL_VM_RUNTIME_STORE_FILE_BYTES,
+        (buffer) => {
+          const value = parseEphemeralVmRuntimeStore(buffer)
+          return {
+            value,
+            requiresCriticalDurability: value.runtimes.some(isOperatorRuntime)
+          }
+        }
       )
-    )
-    assertUniqueRuntimeIds(parsed.runtimes)
-    return {
-      version: 1,
-      runtimes: parsed.runtimes
-        .map((entry) => EphemeralVmRuntimeRecordSchema.parse(entry))
-        .sort(compareRuntimeRecords)
     }
+    return parseEphemeralVmRuntimeStore(
+      readNodeFileSyncWithinLimit(path, MAX_EPHEMERAL_VM_RUNTIME_STORE_FILE_BYTES).buffer
+    )
   } catch {
     throw new EphemeralVmRuntimeStoreError(
       'runtime_error',
       `Could not read Orca ephemeral VM runtimes at ${path}; the file is invalid.`
     )
+  }
+}
+
+function parseEphemeralVmRuntimeStore(buffer: Buffer): EphemeralVmRuntimeStore {
+  const parsed = EphemeralVmRuntimeStoreSchema.parse(parseStrictUtf8Json(buffer))
+  assertUniqueRuntimeIds(parsed.runtimes)
+  return {
+    version: 1,
+    runtimes: parsed.runtimes
+      .map((entry) => EphemeralVmRuntimeRecordSchema.parse(entry))
+      .sort(compareRuntimeRecords)
   }
 }
 
