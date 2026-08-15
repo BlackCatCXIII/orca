@@ -37,11 +37,12 @@ import {
   DialogTitle
 } from '../ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select'
-import { remoteEnvironmentWorkspacesCopy as copy } from './remote-environment-workspaces-copy'
+import { getRemoteEnvironmentWorkspacesCopy } from './remote-environment-workspaces-copy'
 
 type Catalog = { repos: Repo[]; projects: Project[] }
 
 export function RemoteEnvironmentWorkspacesSection({ environmentId }: { environmentId: string }) {
+  const copy = getRemoteEnvironmentWorkspacesCopy()
   const operationGateRef = useRef(new EnvironmentRecipeOperationGate())
   const [supported, setSupported] = useState<boolean | null>(null)
   const [catalog, setCatalog] = useState<Catalog>({ repos: [], projects: [] })
@@ -79,7 +80,7 @@ export function RemoteEnvironmentWorkspacesSection({ environmentId }: { environm
       setSupported(false)
       toast.error(copy.loadError)
     }
-  }, [environmentId])
+  }, [copy.loadError, environmentId])
 
   const refreshRepo = useCallback(async () => {
     if (!repoId || supported !== true) {
