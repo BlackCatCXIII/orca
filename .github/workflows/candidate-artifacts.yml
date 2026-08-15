@@ -24,7 +24,7 @@ jobs:
       - name: Checkout pinned candidate source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: c887a8265cf9c9dfc4beba7c1ce2ea533907165f
+          ref: c8cf4863b5b798aba6dcc0d7adc204ae26f0aff7
           path: source
           persist-credentials: false
 
@@ -65,7 +65,7 @@ jobs:
       - name: Checkout pinned candidate source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: c887a8265cf9c9dfc4beba7c1ce2ea533907165f
+          ref: c8cf4863b5b798aba6dcc0d7adc204ae26f0aff7
           path: source
           persist-credentials: false
 
@@ -153,7 +153,7 @@ jobs:
       - name: Checkout pinned candidate source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: c887a8265cf9c9dfc4beba7c1ce2ea533907165f
+          ref: c8cf4863b5b798aba6dcc0d7adc204ae26f0aff7
           path: source
           persist-credentials: false
 
@@ -243,7 +243,7 @@ jobs:
       - name: Checkout pinned candidate source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: c887a8265cf9c9dfc4beba7c1ce2ea533907165f
+          ref: c8cf4863b5b798aba6dcc0d7adc204ae26f0aff7
           path: source
           persist-credentials: false
 
@@ -329,7 +329,7 @@ jobs:
       - name: Checkout pinned candidate source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: c887a8265cf9c9dfc4beba7c1ce2ea533907165f
+          ref: c8cf4863b5b798aba6dcc0d7adc204ae26f0aff7
           path: source
           persist-credentials: false
 
@@ -423,7 +423,7 @@ jobs:
       - name: Checkout pinned candidate source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: c887a8265cf9c9dfc4beba7c1ce2ea533907165f
+          ref: c8cf4863b5b798aba6dcc0d7adc204ae26f0aff7
           path: source
           persist-credentials: false
 
@@ -503,7 +503,7 @@ jobs:
       - name: Checkout pinned candidate source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: c887a8265cf9c9dfc4beba7c1ce2ea533907165f
+          ref: c8cf4863b5b798aba6dcc0d7adc204ae26f0aff7
           path: source
           persist-credentials: false
 

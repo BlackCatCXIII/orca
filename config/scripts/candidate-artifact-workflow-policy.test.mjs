@@ -62,7 +62,7 @@ test('keeps candidate runtime source distinct from the integrated support contra
   const { policy } = await fixture()
   const documentation = await readFile(resolve('.github/CANDIDATE_ARTIFACTS.md'), 'utf8')
 
-  expect(policy.sourceRevision).toBe('c887a8265cf9c9dfc4beba7c1ce2ea533907165f')
+  expect(policy.sourceRevision).toBe('c8cf4863b5b798aba6dcc0d7adc204ae26f0aff7')
   expect(policy.sourceRevision).not.toBe(supportRevision)
   expect(documentation).toContain(policy.sourceRevision)
   expect(documentation).toContain(supportRevision)
@@ -148,7 +148,7 @@ const adversarialCases = [
     'source revision elsewhere',
     (workflow) => {
       const step = workflow.jobs.policy.steps.find((candidate) => candidate.run)
-      step.run += '\necho c887a8265cf9c9dfc4beba7c1ce2ea533907165f'
+      step.run += '\necho c8cf4863b5b798aba6dcc0d7adc204ae26f0aff7'
     }
   ],
   [
@@ -321,7 +321,7 @@ test('rejects the current checkout when it is not the pinned source', async () =
         workflowRevision: '1111111111111111111111111111111111111111',
         policyPath
       })
-    ).rejects.toThrow(/Expected source revision c887a8265cf9c9dfc4beba7c1ce2ea533907165f/)
+    ).rejects.toThrow(/Expected source revision c8cf4863b5b798aba6dcc0d7adc204ae26f0aff7/)
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
