@@ -1,5 +1,5 @@
 /* eslint-disable max-lines -- Why: runtime behavior is stateful and cross-cutting, so these tests stay in one file to preserve the end-to-end invariants around handles, waits, and graph sync. */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import type * as GitUsernameModule from '../git/git-username'
 import { performance } from 'node:perf_hooks'
 import { EventEmitter } from 'node:events'
@@ -44657,6 +44657,10 @@ describe('OrcaRuntimeService', () => {
   })
 
   it('uses desktop task agent selection and bracketed-pastes startup drafts for local worktrees', async () => {
+    vi.useFakeTimers()
+    onTestFinished(() => {
+      vi.useRealTimers()
+    })
     detectInstalledAgentsWithShellPathHydrationMock.mockResolvedValue(['claude'])
     const metaById: Record<string, WorktreeMeta> = {}
     const runtimeStore = {
@@ -44729,10 +44733,82 @@ describe('OrcaRuntimeService', () => {
     )
     expect(metaById[result.worktree.id]).toMatchObject({ createdWithAgent: 'codex' })
 
-    runtime.onPtyData('pty-startup-draft', '\x1b[?2004h›', Date.now())
-    await vi.waitFor(() => {
-      expect(write).toHaveBeenCalledWith('pty-startup-draft', `\x1b[200~${draftUrl}\x1b[201~`)
+    runtime.onPtyData('pty-startup-draft', '\x1b[?2004h', Date.now())
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(write).not.toHaveBeenCalled()
+
+    runtime.onPtyData('pty-startup-draft', '›', Date.now())
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(write).toHaveBeenCalledWith('pty-startup-draft', `\x1b[200~${draftUrl}\x1b[201~`)
+  })
+
+  it('keeps the 8s main-runtime startup readiness budget for non-Codex agents', async () => {
+    vi.useFakeTimers()
+    onTestFinished(() => {
+      vi.useRealTimers()
     })
+    const runtimeStore = {
+      ...store,
+      getSettings: () => ({
+        ...store.getSettings(),
+        defaultTuiAgent: 'opencode' as const,
+        agentCmdOverrides: {}
+      })
+    }
+    const runtime = new OrcaRuntimeService(runtimeStore as never)
+    const spawn = vi.fn().mockResolvedValue({ id: 'pty-opencode-draft-timeout' })
+    const write = vi.fn().mockReturnValue(true)
+    runtime.setPtyController({
+      spawn,
+      write,
+      kill: () => true,
+      getForegroundProcess: async () => null
+    })
+    runtime.setNotifier({
+      worktreesChanged: vi.fn(),
+      reposChanged: vi.fn(),
+      activateWorktree: vi.fn(),
+      createTerminal: vi.fn(),
+      revealTerminalSession: vi.fn().mockResolvedValue({ tabId: 'tab-opencode-draft-timeout' }),
+      splitTerminal: vi.fn(),
+      renameTerminal: vi.fn(),
+      focusTerminal: vi.fn(),
+      closeTerminal: vi.fn(),
+      sleepWorktree: vi.fn(),
+      terminalFitOverrideChanged: vi.fn(),
+      terminalDriverChanged: vi.fn()
+    })
+    runtime.attachWindow(1)
+
+    computeWorktreePathMock.mockReturnValue('/tmp/workspaces/runtime-opencode-draft-timeout')
+    ensurePathWithinWorkspaceMock.mockReturnValue('/tmp/workspaces/runtime-opencode-draft-timeout')
+    vi.mocked(listWorktrees).mockResolvedValue([
+      {
+        path: '/tmp/workspaces/runtime-opencode-draft-timeout',
+        head: 'def',
+        branch: 'runtime-opencode-draft-timeout',
+        isBare: false,
+        isMainWorktree: false
+      }
+    ])
+
+    await runtime.createManagedWorktree({
+      repoSelector: 'id:repo-1',
+      name: 'runtime-opencode-draft-timeout',
+      startupDraft: 'https://github.com/stablyai/orca/issues/456'
+    })
+
+    await vi.advanceTimersByTimeAsync(7999)
+    expect(write).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(1)
+    runtime.onPtyData('pty-opencode-draft-timeout', '\x1b[?2004h\x1b[?25h', Date.now())
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(write).not.toHaveBeenCalled()
   })
 
   it('rejects explicit startup commands for disabled selected agents', async () => {
