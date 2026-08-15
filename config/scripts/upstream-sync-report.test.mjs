@@ -4,10 +4,11 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   buildUpstreamSyncReport,
+  isolatedGitArguments,
   isolatedGitEnvironment,
   renderUpstreamSyncMarkdown,
   validateGitRef,
@@ -48,20 +49,31 @@ function commitFile(repository, file, content, message) {
   return git(repository, 'rev-parse', 'HEAD')
 }
 
-function createDivergedRepositories({ conflict = false } = {}) {
+function createDivergedRepositories({
+  conflict = false,
+  customMergeDriver = false,
+  renameEdit = false
+} = {}) {
   const root = temporaryDirectory('upstream-sync-fixture')
   const seed = path.join(root, 'seed')
   const downstream = path.join(root, 'downstream')
   const upstream = path.join(root, 'upstream')
   initializeRepository(seed)
   commitFile(seed, 'shared.txt', 'base\n', 'base')
+  if (customMergeDriver) {
+    commitFile(seed, '.gitattributes', 'shared.txt merge=adversarial\n', 'merge attributes')
+  }
   git(root, 'clone', '--quiet', seed, downstream)
   git(root, 'clone', '--quiet', seed, upstream)
   git(downstream, 'config', 'user.email', 'test@example.invalid')
   git(downstream, 'config', 'user.name', 'Test')
   git(upstream, 'config', 'user.email', 'test@example.invalid')
   git(upstream, 'config', 'user.name', 'Test')
-  if (conflict) {
+  if (renameEdit) {
+    git(downstream, 'mv', 'shared.txt', 'renamed.txt')
+    git(downstream, 'commit', '--quiet', '-m', 'rename shared file')
+    commitFile(upstream, 'shared.txt', 'base edited upstream\n', 'edit renamed source')
+  } else if (conflict) {
     commitFile(downstream, 'shared.txt', 'downstream\n', 'downstream')
     commitFile(upstream, 'shared.txt', 'upstream\n', 'upstream')
   } else {
@@ -82,6 +94,7 @@ function reportOptions(fixture) {
 }
 
 afterEach(() => {
+  vi.unstubAllEnvs()
   for (const root of temporaryRoots.splice(0)) {
     rmSync(root, { recursive: true, force: true })
   }
@@ -105,7 +118,7 @@ describe('upstream sync report', () => {
     expect(report.simulation).toMatchObject({
       method: 'disposable-no-commit-merge',
       callerWorktreeMutated: false,
-      gitConfigIsolation: 'system-and-global-disabled',
+      gitConfigIsolation: 'inherited-controls-and-hooks-disabled',
       mergeable: true,
       conflicts: []
     })
@@ -124,6 +137,18 @@ describe('upstream sync report', () => {
     expect(report.status).toBe('conflicts')
     expect(report.simulation.conflicts).toEqual(['shared.txt'])
     expect(report.hotspots).toEqual([{ category: 'other', count: 1, files: ['shared.txt'] }])
+  })
+
+  it('includes both sides of a rename when the other branch edits its source', () => {
+    const fixture = createDivergedRepositories({ renameEdit: true })
+
+    const report = buildUpstreamSyncReport(reportOptions(fixture))
+
+    expect(report.status).toBe('mergeable')
+    expect(report.changedPaths).toEqual({ downstream: 2, upstream: 1, overlap: 2 })
+    expect(report.hotspots).toEqual([
+      { category: 'other', count: 2, files: ['renamed.txt', 'shared.txt'] }
+    ])
   })
 
   it('fails closed when the caller repository is dirty', () => {
@@ -184,6 +209,9 @@ describe('upstream sync report', () => {
     expect(() => validateGitRef('--upload-pack=malicious')).toThrowError(
       expect.objectContaining({ code: 'malformed-ref' })
     )
+    expect(() => validateGitRef('refs/tags/v1.0.0')).toThrowError(
+      expect.objectContaining({ code: 'malformed-ref' })
+    )
     expect(() =>
       validateRepositoryLocation('https://user:secret@example.com/repo.git')
     ).toThrowError(expect.objectContaining({ code: 'malformed-url' }))
@@ -196,13 +224,58 @@ describe('upstream sync report', () => {
   })
 
   it('quarantines system/global Git config and interactive credential prompts', () => {
-    expect(
-      isolatedGitEnvironment({ GIT_CONFIG_GLOBAL: 'attacker', GIT_CONFIG_NOSYSTEM: '0' })
-    ).toMatchObject({
+    const environment = isolatedGitEnvironment({
+      PATH: 'preserved',
+      GIT_ASKPASS: 'attacker',
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'merge.adversarial.driver',
+      GIT_DIR: 'attacker',
+      GIT_OBJECT_DIRECTORY: 'attacker',
+      GIT_WORK_TREE: 'attacker',
+      SSH_ASKPASS: 'attacker',
+      SSH_AUTH_SOCK: 'attacker'
+    })
+    expect(environment).toMatchObject({
+      PATH: 'preserved',
       GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null',
       GIT_CONFIG_NOSYSTEM: '1',
-      GIT_TERMINAL_PROMPT: '0'
+      GIT_TERMINAL_PROMPT: '0',
+      SSH_ASKPASS_REQUIRE: 'never'
     })
+    for (const key of [
+      'GIT_ASKPASS',
+      'GIT_CONFIG_COUNT',
+      'GIT_CONFIG_KEY_0',
+      'GIT_DIR',
+      'GIT_OBJECT_DIRECTORY',
+      'GIT_WORK_TREE',
+      'SSH_ASKPASS',
+      'SSH_AUTH_SOCK'
+    ]) {
+      expect(environment).not.toHaveProperty(key)
+    }
+    expect(isolatedGitArguments(['status', '--short'])).toEqual([
+      '-c',
+      `core.hooksPath=${process.platform === 'win32' ? 'NUL' : '/dev/null'}`,
+      '-c',
+      'credential.helper=',
+      '-c',
+      'http.extraHeader=',
+      'status',
+      '--short'
+    ])
+  })
+
+  it('does not let injected command-scope merge drivers falsify conflict truth', () => {
+    const fixture = createDivergedRepositories({ conflict: true, customMergeDriver: true })
+    vi.stubEnv('GIT_CONFIG_COUNT', '1')
+    vi.stubEnv('GIT_CONFIG_KEY_0', 'merge.adversarial.driver')
+    vi.stubEnv('GIT_CONFIG_VALUE_0', 'node -e "process.exit(0)"')
+
+    const report = buildUpstreamSyncReport(reportOptions(fixture))
+
+    expect(report.status).toBe('conflicts')
+    expect(report.simulation.conflicts).toEqual(['shared.txt'])
   })
 
   it('validates expected immutable SHAs', () => {

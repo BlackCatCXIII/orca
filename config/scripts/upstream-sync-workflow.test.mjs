@@ -59,4 +59,37 @@ describe('daily upstream sync workflow', () => {
       'workflow actions must use approved 40-hex commit pins'
     )
   })
+
+  it('requires the exact terminal failure gate immediately after report upload', () => {
+    const source = readFileSync(workflowPath, 'utf8')
+    const neutralized = source.replace('run: exit 1', 'run: exit 0')
+    const deleted = source.replace(
+      /\n      - name: Fail after preserving a non-mergeable report[\s\S]*$/,
+      ''
+    )
+    const insertedAfterUpload = source.replace(
+      '      - name: Fail after preserving a non-mergeable report',
+      '      - name: Extra terminal step\n        run: echo bypass\n\n' +
+        '      - name: Fail after preserving a non-mergeable report'
+    )
+    const neutralizedFailure = source.replace(
+      '        run: exit 1',
+      '        continue-on-error: true\n        run: exit 1'
+    )
+    const neutralizedCondition = source.replace(
+      "if: always() && steps.simulation.outcome != 'success'",
+      'if: always()'
+    )
+    for (const mutation of [
+      neutralized,
+      deleted,
+      insertedAfterUpload,
+      neutralizedFailure,
+      neutralizedCondition
+    ]) {
+      expect(validateDailyUpstreamSyncWorkflow(mutation).join('\n')).toMatch(
+        /report upload must be immediately before|exact non-success failure gate/
+      )
+    }
+  })
 })

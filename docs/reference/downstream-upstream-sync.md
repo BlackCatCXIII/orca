@@ -30,10 +30,23 @@ It only reports merge readiness; it never creates a merge commit or advances a b
    the focused and full gates and the corresponding immutable artifact digest has been verified.
    Keep the prior pin available for rollback.
 
+## Upstream submission is a separate track
+
+This merge train keeps the downstream integration current; it does not make the roughly 169-file,
+15,000-line product delta suitable for one upstream pull request. Extract reviewable, dependency-
+ordered submissions instead:
+
+1. Core schema plus SSH and lifecycle primitives.
+2. Headless catalog and provisioning UI, based on the accepted core.
+3. Durable repository and replay state, based on the accepted lifecycle contracts.
+
+Candidate-artifact machinery, this daily-sync policy, and deployment-specific controls remain
+downstream-only. Preparing this stack does not authorize publishing branches or opening requests.
+
 ## Local report
 
-Run from a clean, complete checkout. Use full branch/tag refs or immutable 40-character lowercase
-SHAs; ambiguous names such as `main` are rejected.
+Run from a clean, complete checkout. Use full branch refs or immutable 40-character lowercase SHAs;
+ambiguous names such as `main` and tag refs are rejected.
 
 ```bash
 node config/scripts/upstream-sync-report.mjs \
@@ -48,7 +61,9 @@ node config/scripts/upstream-sync-report.mjs \
 
 The command exits `0` for a clean simulation, `3` for reported conflicts, and `2` for invalid or
 incomplete evidence. Both report formats contain exact SHAs, ahead/behind counts, conflict paths,
-and categorized overlap hotspots. The caller worktree is never used for the merge.
+and categorized overlap hotspots. The caller worktree is never used for the merge. Disposable Git
+commands discard inherited Git command configuration, object/worktree overrides, credential and
+askpass controls, and hooks.
 
 Each repository URL/path must be able to serve complete Git objects. A local shallow or blob-filtered
 promisor clone may be unable to re-export missing objects; use its complete hosted URL or a full local
