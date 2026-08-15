@@ -1,0 +1,124 @@
+import { readFileSync } from 'node:fs'
+import { pathToFileURL } from 'node:url'
+
+import { parse } from 'yaml'
+
+const WORKFLOW_PATH = '.github/workflows/daily-upstream-sync.yml'
+const ACTION_PINS = new Set([
+  'actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803',
+  'pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86',
+  'actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38',
+  'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a'
+])
+const FORBIDDEN_TEXT = [
+  /\bsecrets\s*\./i,
+  /github\s*(?:\.token|\[['"]token['"]\])/i,
+  /\bGITHUB_TOKEN\b/,
+  /\bgit\s+push\b/i,
+  /\bgh\s+(?:pr|issue|release)\b/i,
+  /\b(?:kubectl|flux)\b/i,
+  /\bdocker\s+push\b/i
+]
+
+function requireValue(condition, message, failures) {
+  if (!condition) {
+    failures.push(message)
+  }
+}
+
+export function validateDailyUpstreamSyncWorkflow(source) {
+  const failures = []
+  const workflow = parse(source)
+  const triggerNames = Object.keys(workflow.on ?? {}).sort()
+  requireValue(
+    JSON.stringify(triggerNames) === JSON.stringify(['schedule', 'workflow_dispatch']),
+    'workflow triggers must be exactly schedule and workflow_dispatch',
+    failures
+  )
+  requireValue(
+    JSON.stringify(workflow.permissions) === JSON.stringify({ contents: 'read' }),
+    'top-level permissions must be exactly contents: read',
+    failures
+  )
+  requireValue(Array.isArray(workflow.on?.schedule), 'workflow must have a schedule', failures)
+  const jobs = Object.values(workflow.jobs ?? {})
+  requireValue(jobs.length === 1, 'workflow must contain exactly one job', failures)
+  const job = jobs[0] ?? {}
+  requireValue(job.permissions === undefined, 'job must not override permissions', failures)
+  const steps = job.steps ?? []
+  requireValue(
+    steps.filter((step) => step.uses).every((step) => ACTION_PINS.has(step.uses)),
+    'workflow actions must use approved 40-hex commit pins',
+    failures
+  )
+  const checkoutSteps = steps.filter((step) => step.uses?.startsWith('actions/checkout@'))
+  requireValue(checkoutSteps.length === 1, 'workflow must use one pinned checkout action', failures)
+  const checkout = checkoutSteps[0]?.with ?? {}
+  requireValue(checkout.ref === '${{ github.sha }}', 'checkout ref must be github.sha', failures)
+  requireValue(checkout['fetch-depth'] === 0, 'checkout must fetch complete history', failures)
+  requireValue(
+    checkout['persist-credentials'] === false,
+    'checkout must not persist credentials',
+    failures
+  )
+  requireValue(checkout.token === '', 'checkout token must be explicitly empty', failures)
+  const simulation = steps.find((step) => step.id === 'simulation')
+  requireValue(
+    simulation?.['continue-on-error'] === true,
+    'simulation must preserve reports',
+    failures
+  )
+  requireValue(
+    simulation?.run?.includes('--downstream-ref "${{ github.sha }}"'),
+    'downstream SHA is not explicit',
+    failures
+  )
+  requireValue(
+    simulation?.run?.includes('--upstream-url https://github.com/stablyai/orca.git'),
+    'official upstream URL is not fixed',
+    failures
+  )
+  requireValue(
+    simulation?.run?.includes('--upstream-ref refs/heads/main'),
+    'official upstream ref is not explicit',
+    failures
+  )
+  const artifact = steps.find((step) => step.uses?.startsWith('actions/upload-artifact@'))
+  requireValue(artifact?.if === 'always()', 'report artifact must upload on failure', failures)
+  requireValue(
+    Number.isInteger(artifact?.with?.['retention-days']) && artifact.with['retention-days'] <= 14,
+    'report retention must be an integer no greater than 14 days',
+    failures
+  )
+  requireValue(
+    artifact?.with?.['if-no-files-found'] === 'error',
+    'missing reports must fail',
+    failures
+  )
+  for (const pattern of FORBIDDEN_TEXT) {
+    requireValue(!pattern.test(source), `forbidden workflow capability: ${pattern}`, failures)
+  }
+  const tokenMappings = [...source.matchAll(/^\s*token:\s*(.*)$/gm)].map((match) => match[1].trim())
+  requireValue(
+    tokenMappings.length === 1 && tokenMappings[0] === "''",
+    'only one explicitly empty token mapping is allowed',
+    failures
+  )
+  return failures
+}
+
+export function checkDailyUpstreamSyncWorkflow(file = WORKFLOW_PATH) {
+  const failures = validateDailyUpstreamSyncWorkflow(readFileSync(file, 'utf8'))
+  if (failures.length > 0) {
+    throw new Error(failures.join('\n'))
+  }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  try {
+    checkDailyUpstreamSyncWorkflow()
+  } catch (error) {
+    console.error(error.message)
+    process.exitCode = 1
+  }
+}
