@@ -4,6 +4,7 @@ import { JsonStringifyByteLimitError } from './node-bounded-json-stringify'
 import { readNodeFileSyncWithinLimit } from './node-bounded-file-reader'
 import { writeDurableSecureJsonFileWithinLimit } from './bounded-secure-json-file'
 import { hardenExistingSecureFile } from './secure-file'
+import { parseStrictUtf8Json } from './strict-json'
 import {
   EphemeralVmRuntimeRecordSchema,
   EphemeralVmRuntimeStoreSchema,
@@ -141,13 +142,11 @@ function readEphemeralVmRuntimeStore(userDataPath: string): EphemeralVmRuntimeSt
   try {
     hardenExistingSecureFile(path)
     const parsed = EphemeralVmRuntimeStoreSchema.parse(
-      JSON.parse(
-        readNodeFileSyncWithinLimit(
-          path,
-          MAX_EPHEMERAL_VM_RUNTIME_STORE_FILE_BYTES
-        ).buffer.toString('utf8')
+      parseStrictUtf8Json(
+        readNodeFileSyncWithinLimit(path, MAX_EPHEMERAL_VM_RUNTIME_STORE_FILE_BYTES).buffer
       )
     )
+    assertUniqueRuntimeIds(parsed.runtimes)
     return {
       version: 1,
       runtimes: parsed.runtimes
@@ -159,6 +158,16 @@ function readEphemeralVmRuntimeStore(userDataPath: string): EphemeralVmRuntimeSt
       'runtime_error',
       `Could not read Orca ephemeral VM runtimes at ${path}; the file is invalid.`
     )
+  }
+}
+
+function assertUniqueRuntimeIds(runtimes: EphemeralVmRuntimeRecord[]): void {
+  const runtimeIds = new Set<string>()
+  for (const runtime of runtimes) {
+    if (runtimeIds.has(runtime.id)) {
+      throw new Error('Duplicate ephemeral VM runtime ID.')
+    }
+    runtimeIds.add(runtime.id)
   }
 }
 

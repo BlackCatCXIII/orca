@@ -1,11 +1,17 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { upsertEphemeralVmRuntime } from '../shared/ephemeral-vm-runtime-store'
+import {
+  EphemeralVmRuntimeStoreError,
+  getEphemeralVmRuntimeStorePath,
+  listEphemeralVmRuntimes,
+  upsertEphemeralVmRuntime
+} from '../shared/ephemeral-vm-runtime-store'
 import {
   completeDurableEnvironmentRecipeMutation,
   EnvironmentRecipeOperationJournalError,
+  getEnvironmentRecipeOperationJournalPath,
   prepareDurableEnvironmentRecipeMutation,
   readDurableEnvironmentRecipeMutation,
   retainCapacityForPreparedEnvironmentRecipeMutation,
@@ -47,6 +53,17 @@ function entry(
 function prepareInput(candidate: DurableEnvironmentRecipeMutation) {
   const { state: _state, createdAt: _createdAt, updatedAt: _updatedAt, ...input } = candidate
   return input
+}
+
+function corruptPersistedJsonField(path: string, value: string): void {
+  const bytes = readFileSync(path)
+  const offset = bytes.indexOf(value)
+  if (offset === -1) {
+    throw new Error(`Persisted field not found: ${value}`)
+  }
+  bytes[offset] = 0xc3
+  bytes[offset + 1] = 0x28
+  writeFileSync(path, bytes)
 }
 
 function persistCleanedRuntime(
@@ -164,6 +181,85 @@ describe('environment recipe operation journal', () => {
     expect(readDurableEnvironmentRecipeMutation(userDataPath, first)).toBeNull()
     expect(readDurableEnvironmentRecipeMutation(userDataPath, second)?.state).toBe('terminal')
     expect(readDurableEnvironmentRecipeMutation(userDataPath, third)?.state).toBe('prepared')
+  })
+
+  it('rejects malformed UTF-8 in a persisted mutation identity', () => {
+    const userDataPath = root()
+    const prepared = entry('invalid-utf8', 'prepared', 1)
+    prepareDurableEnvironmentRecipeMutation(userDataPath, prepareInput(prepared), 1)
+    corruptPersistedJsonField(
+      getEnvironmentRecipeOperationJournalPath(userDataPath),
+      prepared.pairedDeviceId
+    )
+
+    expect(() => readDurableEnvironmentRecipeMutation(userDataPath, prepared)).toThrow(
+      EnvironmentRecipeOperationJournalError
+    )
+  })
+
+  it('rejects duplicate JSON keys in a persisted mutation identity', () => {
+    const userDataPath = root()
+    const prepared = entry('duplicate-key', 'prepared', 1)
+    prepareDurableEnvironmentRecipeMutation(userDataPath, prepareInput(prepared), 1)
+    const path = getEnvironmentRecipeOperationJournalPath(userDataPath)
+    const source = readFileSync(path, 'utf8').replace(
+      '"pairedDeviceId":"paired-device"',
+      '"pairedDeviceId":"paired-device","pairedDeviceId":"paired-device"'
+    )
+    writeFileSync(path, source, 'utf8')
+
+    expect(() => readDurableEnvironmentRecipeMutation(userDataPath, prepared)).toThrow(
+      EnvironmentRecipeOperationJournalError
+    )
+  })
+
+  it('rejects duplicate logical mutation identities', () => {
+    const userDataPath = root()
+    const duplicate = entry('duplicate-identity', 'completed', 1)
+    writeFileSync(
+      getEnvironmentRecipeOperationJournalPath(userDataPath),
+      JSON.stringify({ version: 1, entries: [duplicate, { ...duplicate, updatedAt: 2 }] }),
+      'utf8'
+    )
+
+    expect(() => readDurableEnvironmentRecipeMutation(userDataPath, duplicate)).toThrow(
+      EnvironmentRecipeOperationJournalError
+    )
+  })
+
+  it('fails closed when evicted mutation backing records contain duplicate runtime IDs', () => {
+    const userDataPath = root()
+    const first = entry('evicted-corrupt-runtime', 'terminal', 1)
+    const second = entry('retained-terminal', 'terminal', 2)
+    const third = entry('retained-prepared', 'prepared', 3)
+
+    prepareDurableEnvironmentRecipeMutation(userDataPath, prepareInput(first), 1, 2)
+    persistCleanedRuntime(userDataPath, first)
+    terminateDurableEnvironmentRecipeMutation(userDataPath, first, 1)
+    prepareDurableEnvironmentRecipeMutation(userDataPath, prepareInput(second), 2, 2)
+    persistCleanedRuntime(userDataPath, second)
+    terminateDurableEnvironmentRecipeMutation(userDataPath, second, 2)
+    prepareDurableEnvironmentRecipeMutation(userDataPath, prepareInput(third), 3, 2)
+    expect(readDurableEnvironmentRecipeMutation(userDataPath, first)).toBeNull()
+
+    const runtimeStorePath = getEphemeralVmRuntimeStorePath(userDataPath)
+    const runtimes = listEphemeralVmRuntimes(userDataPath)
+    const duplicatedRuntime = runtimes.find((runtime) => runtime.id === first.runtimeId)
+    if (!duplicatedRuntime) {
+      throw new Error('Evicted mutation runtime backing record not found.')
+    }
+    writeFileSync(
+      runtimeStorePath,
+      JSON.stringify({ version: 1, runtimes: [...runtimes, duplicatedRuntime] }),
+      'utf8'
+    )
+
+    expect(() =>
+      prepareDurableEnvironmentRecipeMutation(userDataPath, prepareInput(first), 4, 2)
+    ).toThrow(EphemeralVmRuntimeStoreError)
+    expect(readDurableEnvironmentRecipeMutation(userDataPath, first)).toBeNull()
+    expect(readDurableEnvironmentRecipeMutation(userDataPath, second)).not.toBeNull()
+    expect(readDurableEnvironmentRecipeMutation(userDataPath, third)).not.toBeNull()
   })
 
   it('serializes same-process read-modify-write preparation for different mutations', async () => {
