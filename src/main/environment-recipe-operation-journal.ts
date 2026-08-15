@@ -1,9 +1,9 @@
-import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { lstatSync, realpathSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 import { z } from 'zod'
-import { readNodeFileSyncWithinLimit } from '../shared/node-bounded-file-reader'
 import { stringifyJsonWithinByteLimit } from '../shared/node-bounded-json-stringify'
-import { hardenExistingSecureFile, writeSecureFile } from '../shared/secure-file'
+import { writeSecureFile } from '../shared/secure-file'
+import { readConditionallyAuthoritativeSecureFileSync } from '../shared/secure-file-authoritative-read'
 import { listAuthoritativeEphemeralVmRuntimes } from '../shared/ephemeral-vm-runtime-store'
 import type { EphemeralVmRuntimeRecord } from '../shared/ephemeral-vm-runtimes'
 import { parseStrictUtf8Json } from '../shared/strict-json'
@@ -149,19 +149,52 @@ function readJournal(userDataPath: string): {
   entries: DurableEnvironmentRecipeMutation[]
 } {
   const path = getEnvironmentRecipeOperationJournalPath(userDataPath)
-  if (!existsSync(path)) {
-    return { version: 1, entries: [] }
-  }
   try {
-    hardenExistingSecureFile(path)
-    const journal = MutationJournalSchema.parse(
-      parseStrictUtf8Json(readNodeFileSyncWithinLimit(path, MAX_JOURNAL_FILE_BYTES).buffer)
-    )
-    assertUniqueMutationIdentities(journal.entries)
-    return journal
+    if (journalPathIsMissing(path)) {
+      return { version: 1, entries: [] }
+    }
   } catch {
     throw new EnvironmentRecipeOperationJournalError('invalid')
   }
+  try {
+    return readConditionallyAuthoritativeSecureFileSync(path, MAX_JOURNAL_FILE_BYTES, (buffer) => ({
+      value: parseJournal(buffer),
+      requiresCriticalDurability: true
+    }))
+  } catch {
+    throw new EnvironmentRecipeOperationJournalError('invalid')
+  }
+}
+
+function journalPathIsMissing(path: string): boolean {
+  try {
+    lstatSync(path)
+    return false
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw error
+    }
+  }
+
+  const canonicalParent = realpathSync(dirname(path))
+  try {
+    lstatSync(join(canonicalParent, basename(path)))
+    return false
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return true
+    }
+    throw error
+  }
+}
+
+function parseJournal(buffer: Buffer): {
+  version: 1
+  entries: DurableEnvironmentRecipeMutation[]
+} {
+  const journal = MutationJournalSchema.parse(parseStrictUtf8Json(buffer))
+  assertUniqueMutationIdentities(journal.entries)
+  return journal
 }
 
 function assertUniqueMutationIdentities(entries: DurableEnvironmentRecipeMutation[]): void {

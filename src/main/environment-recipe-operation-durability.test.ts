@@ -11,7 +11,8 @@ type CriticalSecureFileStage = 'temp-fsync' | 'rename' | 'parent-dir-fsync' | 'a
 const filesystemFailure = vi.hoisted(() => ({
   stage: null as CriticalSecureFileStage | null,
   targetPath: null as string | null,
-  lastRenamedTargetPath: null as string | null
+  lastRenamedTargetPath: null as string | null,
+  authorityTargetObserved: false
 }))
 
 vi.mock('../shared/secure-file-filesystem', async (importOriginal) => {
@@ -19,6 +20,15 @@ vi.mock('../shared/secure-file-filesystem', async (importOriginal) => {
   const nodeFs = await vi.importActual<typeof NodeFs>('node:fs')
   const shouldFail = (stage: CriticalSecureFileStage, targetPath: string): boolean =>
     filesystemFailure.stage === stage && filesystemFailure.targetPath === targetPath
+  const descriptorMatches = (descriptor: number, targetPath: string): boolean => {
+    try {
+      const descriptorStats = nodeFs.fstatSync(descriptor, { bigint: true })
+      const targetStats = nodeFs.lstatSync(targetPath, { bigint: true })
+      return descriptorStats.dev === targetStats.dev && descriptorStats.ino === targetStats.ino
+    } catch {
+      return false
+    }
+  }
   return {
     ...actual,
     fsyncSecurePathSync(path: string, flags: 'r' | 'r+'): void {
@@ -42,7 +52,13 @@ vi.mock('../shared/secure-file-filesystem', async (importOriginal) => {
       filesystemFailure.lastRenamedTargetPath = targetPath
     },
     fsyncSecureFileDescriptorSync(descriptor: number): void {
-      if (filesystemFailure.stage === 'authority-file-fsync') {
+      filesystemFailure.authorityTargetObserved = Boolean(
+        filesystemFailure.targetPath && descriptorMatches(descriptor, filesystemFailure.targetPath)
+      )
+      if (
+        filesystemFailure.stage === 'authority-file-fsync' &&
+        filesystemFailure.authorityTargetObserved
+      ) {
         throw Object.assign(new Error('injected authority file fsync'), { code: 'EIO' })
       }
       actual.fsyncSecureFileDescriptorSync(descriptor)
@@ -50,10 +66,12 @@ vi.mock('../shared/secure-file-filesystem', async (importOriginal) => {
     fsyncSecureDirectoryDescriptorSync(descriptor: number): void {
       if (
         filesystemFailure.stage === 'parent-dir-fsync' &&
-        filesystemFailure.targetPath === filesystemFailure.lastRenamedTargetPath
+        filesystemFailure.authorityTargetObserved
       ) {
+        filesystemFailure.authorityTargetObserved = false
         throw Object.assign(new Error('injected parent-dir-fsync'), { code: 'EINVAL' })
       }
+      filesystemFailure.authorityTargetObserved = false
       actual.fsyncSecureDirectoryDescriptorSync(descriptor)
     }
   }
@@ -209,6 +227,7 @@ afterEach(() => {
   filesystemFailure.stage = null
   filesystemFailure.targetPath = null
   filesystemFailure.lastRenamedTargetPath = null
+  filesystemFailure.authorityTargetObserved = false
   secureWrites.length = 0
   if (originalPlatform) {
     Object.defineProperty(process, 'platform', originalPlatform)
@@ -244,6 +263,7 @@ describe('environment recipe operation durability ordering', () => {
       clientMutationId: 'unsupported-platform'
     }
     Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
+    const recipeInvocation = vi.fn(async () => result('unsupported-runtime', 'running'))
 
     await expect(
       runIdempotentEnvironmentRecipeMutation(
@@ -253,11 +273,12 @@ describe('environment recipe operation durability ordering', () => {
         { clientMutationId: identity.clientMutationId },
         async (control) => {
           control.persistProvisionRef(provisionRef, 'unsupported-runtime')
-          return result('unsupported-runtime', 'running')
+          return recipeInvocation()
         },
         { operatorRecipeCatalogSha256 }
       )
     ).rejects.toMatchObject({ code: 'environment_recipe_failed' })
+    expect(recipeInvocation).not.toHaveBeenCalled()
     expect(readDurableEnvironmentRecipeMutation(userDataPath, identity)).toBeNull()
   })
 
