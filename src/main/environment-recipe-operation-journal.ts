@@ -5,6 +5,7 @@ import { readNodeFileSyncWithinLimit } from '../shared/node-bounded-file-reader'
 import { stringifyJsonWithinByteLimit } from '../shared/node-bounded-json-stringify'
 import { hardenExistingSecureFile, writeSecureFile } from '../shared/secure-file'
 import { listEphemeralVmRuntimes } from '../shared/ephemeral-vm-runtime-store'
+import type { EphemeralVmRuntimeRecord } from '../shared/ephemeral-vm-runtimes'
 import { parseStrictUtf8Json } from '../shared/strict-json'
 
 const JOURNAL_FILE = 'orca-environment-recipe-mutations.json'
@@ -38,6 +39,11 @@ const MutationJournalSchema = z
 
 export type EnvironmentRecipeMutationIdentity = z.infer<typeof MutationIdentitySchema>
 export type DurableEnvironmentRecipeMutation = z.infer<typeof MutationEntrySchema>
+export type DurableEnvironmentRecipeMutationState =
+  | 'prepared'
+  | 'completed'
+  | 'terminal'
+  | 'conflict'
 
 export class EnvironmentRecipeOperationJournalError extends Error {
   readonly code: 'capacity' | 'invalid'
@@ -72,17 +78,13 @@ export function prepareDurableEnvironmentRecipeMutation(
   const retained = retainCapacityForPreparedEnvironmentRecipeMutation(
     journal.entries,
     maxEntries,
-    (candidate) =>
-      runtimes.some(
-        (runtime) =>
-          runtime.id === candidate.runtimeId &&
-          runtime.provisionMutation?.requestSha256 === candidate.fingerprint &&
-          runtime.provisionMutation.resolvedRef === candidate.provisionRef &&
-          runtime.operatorRecipeCatalogSha256 === candidate.operatorRecipeCatalogSha256 &&
-          (candidate.state === 'completed' ||
-            runtime.status === 'cleaned' ||
-            runtime.status === 'cleanup_failed')
+    (candidate) => {
+      const state = classifyDurableEnvironmentRecipeMutation(candidate, runtimes)
+      return (
+        (state === 'completed' || state === 'terminal') &&
+        hasExactRuntimeBinding(candidate, runtimes)
       )
+    }
   )
   const prepared = MutationEntrySchema.parse({
     ...entry,
@@ -94,44 +96,49 @@ export function prepareDurableEnvironmentRecipeMutation(
   return prepared
 }
 
-export function completeDurableEnvironmentRecipeMutation(
+export function classifyDurableEnvironmentRecipeMutationFromStore(
   userDataPath: string,
-  identity: EnvironmentRecipeMutationIdentity,
-  now = Date.now()
-): void {
-  const journal = readJournal(userDataPath)
-  const existing = journal.entries.find((entry) => sameIdentity(entry, identity))
-  if (!existing || existing.state !== 'prepared') {
-    return
+  entry: DurableEnvironmentRecipeMutation
+): DurableEnvironmentRecipeMutationState {
+  return classifyDurableEnvironmentRecipeMutation(entry, listEphemeralVmRuntimes(userDataPath))
+}
+
+export function classifyDurableEnvironmentRecipeMutation(
+  entry: DurableEnvironmentRecipeMutation,
+  runtimes: readonly EphemeralVmRuntimeRecord[]
+): DurableEnvironmentRecipeMutationState {
+  if (entry.state === 'terminal') {
+    return 'terminal'
   }
-  writeJournal(
-    userDataPath,
-    journal.entries.map((entry) =>
-      sameIdentity(entry, identity)
-        ? MutationEntrySchema.parse({ ...entry, state: 'completed', updatedAt: now })
-        : entry
-    )
+  const runtime = runtimes.find((candidate) => candidate.id === entry.runtimeId)
+  if (!runtime) {
+    return entry.state === 'completed' ? 'conflict' : 'prepared'
+  }
+  if (!runtimeBindingMatches(runtime, entry)) {
+    return 'conflict'
+  }
+  return runtime.status === 'cleaned' || runtime.status === 'cleanup_failed'
+    ? 'terminal'
+    : 'completed'
+}
+
+function runtimeBindingMatches(
+  runtime: EphemeralVmRuntimeRecord,
+  entry: DurableEnvironmentRecipeMutation
+): boolean {
+  return (
+    runtime.provisionMutation?.requestSha256 === entry.fingerprint &&
+    runtime.provisionMutation.resolvedRef === entry.provisionRef &&
+    runtime.operatorRecipeCatalogSha256 === entry.operatorRecipeCatalogSha256
   )
 }
 
-export function terminateDurableEnvironmentRecipeMutation(
-  userDataPath: string,
-  identity: EnvironmentRecipeMutationIdentity,
-  now = Date.now()
-): void {
-  const journal = readJournal(userDataPath)
-  const existing = journal.entries.find((entry) => sameIdentity(entry, identity))
-  if (!existing || existing.state !== 'prepared') {
-    return
-  }
-  writeJournal(
-    userDataPath,
-    journal.entries.map((entry) =>
-      sameIdentity(entry, identity)
-        ? MutationEntrySchema.parse({ ...entry, state: 'terminal', updatedAt: now })
-        : entry
-    )
-  )
+function hasExactRuntimeBinding(
+  entry: DurableEnvironmentRecipeMutation,
+  runtimes: readonly EphemeralVmRuntimeRecord[]
+): boolean {
+  const runtime = runtimes.find((candidate) => candidate.id === entry.runtimeId)
+  return runtime !== undefined && runtimeBindingMatches(runtime, entry)
 }
 
 function readJournal(userDataPath: string): {
@@ -171,7 +178,7 @@ function writeJournal(userDataPath: string, entries: DurableEnvironmentRecipeMut
     MAX_JOURNAL_FILE_BYTES
   ).serialized
   writeSecureFile(getEnvironmentRecipeOperationJournalPath(userDataPath), serialized, {
-    durable: true
+    durability: 'critical'
   })
 }
 
@@ -184,7 +191,7 @@ export function retainCapacityForPreparedEnvironmentRecipeMutation(
     return entries
   }
   const evictable = entries
-    .filter((entry) => entry.state !== 'prepared' && isDurablyBacked(entry))
+    .filter(isDurablyBacked)
     .sort((a, b) => a.updatedAt - b.updatedAt || a.createdAt - b.createdAt)[0]
   if (!evictable) {
     throw new EnvironmentRecipeOperationJournalError('capacity')

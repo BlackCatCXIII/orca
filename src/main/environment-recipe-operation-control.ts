@@ -1,9 +1,8 @@
 import type { EnvironmentRecipeRuntime } from '../shared/environment-recipe-runtime-rpc'
 import {
-  completeDurableEnvironmentRecipeMutation,
+  classifyDurableEnvironmentRecipeMutationFromStore,
   EnvironmentRecipeOperationJournalError,
   prepareDurableEnvironmentRecipeMutation,
-  terminateDurableEnvironmentRecipeMutation,
   type DurableEnvironmentRecipeMutation,
   type EnvironmentRecipeMutationIdentity
 } from './environment-recipe-operation-journal'
@@ -116,7 +115,11 @@ export function runIdempotentEnvironmentRecipeMutation<T extends { clientMutatio
         return
       }
       try {
-        terminateDurableEnvironmentRecipeMutation(profilePath, identity)
+        if (
+          classifyDurableEnvironmentRecipeMutationFromStore(profilePath, durable) !== 'terminal'
+        ) {
+          throw new EnvironmentRecipeOperationJournalError('invalid')
+        }
         durable = { ...durable, state: 'terminal', updatedAt: Date.now() }
       } catch (error) {
         throw journalFailure(error)
@@ -133,9 +136,13 @@ export function runIdempotentEnvironmentRecipeMutation<T extends { clientMutatio
     .then((result) => {
       if (durable) {
         try {
-          completeDurableEnvironmentRecipeMutation(profilePath, identity)
-        } catch {
-          // The prepared pin remains replay-safe even when best-effort retention marking fails.
+          if (
+            classifyDurableEnvironmentRecipeMutationFromStore(profilePath, durable) !== 'completed'
+          ) {
+            throw new EnvironmentRecipeOperationJournalError('invalid')
+          }
+        } catch (error) {
+          throw journalFailure(error)
         }
       }
       return result

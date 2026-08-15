@@ -2,7 +2,10 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { JsonStringifyByteLimitError } from './node-bounded-json-stringify'
 import { readNodeFileSyncWithinLimit } from './node-bounded-file-reader'
-import { writeDurableSecureJsonFileWithinLimit } from './bounded-secure-json-file'
+import {
+  writeCriticalSecureJsonFileWithinLimit,
+  writeDurableSecureJsonFileWithinLimit
+} from './bounded-secure-json-file'
 import { hardenExistingSecureFile } from './secure-file'
 import { parseStrictUtf8Json } from './strict-json'
 import {
@@ -28,21 +31,18 @@ import {
   type EphemeralVmRuntimeStatus,
   type EphemeralVmRuntimeStore
 } from './ephemeral-vm-runtimes'
+import {
+  assertOperatorRuntimeBindingPreserved,
+  assertUniqueRuntimeIds,
+  EphemeralVmRuntimeStoreError,
+  isOperatorRuntime
+} from './ephemeral-vm-runtime-store-invariants'
+
+export { EphemeralVmRuntimeStoreError } from './ephemeral-vm-runtime-store-invariants'
+export type { EphemeralVmRuntimeStoreErrorCode } from './ephemeral-vm-runtime-store-invariants'
 
 const EPHEMERAL_VM_RUNTIMES_FILE = 'orca-ephemeral-vm-runtimes.json'
 export const MAX_EPHEMERAL_VM_RUNTIME_STORE_FILE_BYTES = 1024 * 1024
-
-export type EphemeralVmRuntimeStoreErrorCode = 'invalid_argument' | 'runtime_error'
-
-export class EphemeralVmRuntimeStoreError extends Error {
-  readonly code: EphemeralVmRuntimeStoreErrorCode
-
-  constructor(code: EphemeralVmRuntimeStoreErrorCode, message: string) {
-    super(message)
-    this.name = 'EphemeralVmRuntimeStoreError'
-    this.code = code
-  }
-}
 
 export function getEphemeralVmRuntimeStorePath(userDataPath: string): string {
   return join(userDataPath, EPHEMERAL_VM_RUNTIMES_FILE)
@@ -69,6 +69,7 @@ export function upsertEphemeralVmRuntime(
       `Cannot change compatibility features for ephemeral VM runtime: ${parsed.id}`
     )
   }
+  assertOperatorRuntimeBindingPreserved(previous, parsed)
   writeEphemeralVmRuntimeStore(
     userDataPath,
     {
@@ -77,7 +78,8 @@ export function upsertEphemeralVmRuntime(
         compareRuntimeRecords
       )
     },
-    loaded.features
+    loaded.features,
+    isOperatorRuntime(parsed) || loaded.store.runtimes.some(isOperatorRuntime)
   )
   return parsed
 }
@@ -88,9 +90,15 @@ export function upsertEphemeralVmRuntimeRollbackRecovery(
 ): void {
   const parsed = EphemeralVmRuntimeRecordSchema.parse(record)
   const loaded = readEphemeralVmRuntimeStore(userDataPath)
+  const existing = loaded.store.runtimes.find((entry) => entry.id === parsed.id)
+  assertOperatorRuntimeBindingPreserved(existing, parsed)
   const path = getEphemeralVmRuntimeStorePath(userDataPath)
   try {
-    writeDurableSecureJsonFileWithinLimit(
+    const writeStore =
+      isOperatorRuntime(parsed) || loaded.store.runtimes.some(isOperatorRuntime)
+        ? writeCriticalSecureJsonFileWithinLimit
+        : writeDurableSecureJsonFileWithinLimit
+    writeStore(
       path,
       RollbackEphemeralVmRuntimeStoreSchema.parse({
         version: 1,
@@ -173,7 +181,8 @@ export function updateEphemeralVmRuntimeStatus(
         .map((entry) => (entry.id === id ? next : entry))
         .sort(compareRuntimeRecords)
     },
-    loaded.features
+    loaded.features,
+    loaded.store.runtimes.some(isOperatorRuntime)
   )
   return next
 }
@@ -196,7 +205,8 @@ export function removeEphemeralVmRuntime(
       version: 1,
       runtimes: loaded.store.runtimes.filter((entry) => entry.id !== id)
     },
-    loaded.features
+    loaded.features,
+    loaded.store.runtimes.some(isOperatorRuntime)
   )
   return existing
 }
@@ -244,20 +254,11 @@ function readEphemeralVmRuntimeStore(userDataPath: string): LoadedEphemeralVmRun
   }
 }
 
-function assertUniqueRuntimeIds(runtimes: EphemeralVmRuntimeRecord[]): void {
-  const runtimeIds = new Set<string>()
-  for (const runtime of runtimes) {
-    if (runtimeIds.has(runtime.id)) {
-      throw new Error('Duplicate ephemeral VM runtime ID.')
-    }
-    runtimeIds.add(runtime.id)
-  }
-}
-
 function writeEphemeralVmRuntimeStore(
   userDataPath: string,
   store: EphemeralVmRuntimeStore,
-  features: EphemeralVmRuntimeFeatureStoreSnapshot
+  features: EphemeralVmRuntimeFeatureStoreSnapshot,
+  operatorCritical = store.runtimes.some(isOperatorRuntime)
 ): void {
   const path = getEphemeralVmRuntimeStorePath(userDataPath)
   try {
@@ -270,7 +271,10 @@ function writeEphemeralVmRuntimeStore(
       })
     )
     const preparedFeatures = mergeRuntimeFeatures(features.features, requiredFeatures)
-    writeDurableSecureJsonFileWithinLimit(
+    const writeStore = operatorCritical
+      ? writeCriticalSecureJsonFileWithinLimit
+      : writeDurableSecureJsonFileWithinLimit
+    writeStore(
       path,
       RollbackEphemeralVmRuntimeStoreSchema.parse({
         version: 1,

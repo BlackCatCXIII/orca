@@ -12,7 +12,6 @@ import type { Repo } from '../shared/repo-types'
 import type { OperatorEnvironmentRecipeCatalog } from './operator-environment-recipe-catalog'
 import { resolveEnvironmentRecipeProvisionRef } from './environment-recipe-provision-ref'
 import {
-  completeDurableEnvironmentRecipeMutation,
   getEnvironmentRecipeOperationJournalPath,
   prepareDurableEnvironmentRecipeMutation
 } from './environment-recipe-operation-journal'
@@ -179,7 +178,19 @@ function prepareProvisionMutation(
     operatorRecipeCatalogSha256: catalog.status.digest
   })
   if (state === 'completed') {
-    completeDurableEnvironmentRecipeMutation(primaryUserDataPath, identity)
+    const path = getEnvironmentRecipeOperationJournalPath(primaryUserDataPath)
+    const journal = JSON.parse(readFileSync(path, 'utf8')) as {
+      version: 1
+      entries: { clientMutationId: string; state: string }[]
+    }
+    const persisted = journal.entries.find(
+      (entry) => entry.clientMutationId === params.clientMutationId
+    )
+    if (!persisted) {
+      throw new Error('Prepared mutation fixture was not persisted.')
+    }
+    persisted.state = 'completed'
+    writeFileSync(path, JSON.stringify(journal), 'utf8')
   }
 }
 
@@ -491,7 +502,21 @@ describe('operator environment recipe provision ref service', () => {
       clientMutationId: 'terminal-start-failure'
     }
     provisionMock.mockImplementationOnce(
-      async (args: { onTerminalProvisionFailure?: () => void }) => {
+      async (args: {
+        runtimeId: string
+        provisionMutation: { requestSha256: string; resolvedRef: string }
+        onTerminalProvisionFailure?: () => void
+      }) => {
+        const runtime = persistOperatorRuntime(userDataPath, {
+          runtimeId: args.runtimeId,
+          requestSha256: args.provisionMutation.requestSha256,
+          resolvedRef: args.provisionMutation.resolvedRef
+        })
+        upsertEphemeralVmRuntime(userDataPath, {
+          ...runtime,
+          status: 'cleaned',
+          cleanupStatus: 'succeeded'
+        })
         args.onTerminalProvisionFailure?.()
         return { ok: false, start: { ok: false, error: 'start failed', recipeResult: {} } }
       }
