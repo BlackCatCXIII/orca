@@ -46,6 +46,15 @@ vi.mock('../shared/secure-file-filesystem', async (importOriginal) => {
         throw Object.assign(new Error('injected authority file fsync'), { code: 'EIO' })
       }
       actual.fsyncSecureFileDescriptorSync(descriptor)
+    },
+    fsyncSecureDirectoryDescriptorSync(descriptor: number): void {
+      if (
+        filesystemFailure.stage === 'parent-dir-fsync' &&
+        filesystemFailure.targetPath === filesystemFailure.lastRenamedTargetPath
+      ) {
+        throw Object.assign(new Error('injected parent-dir-fsync'), { code: 'EINVAL' })
+      }
+      actual.fsyncSecureDirectoryDescriptorSync(descriptor)
     }
   }
 })

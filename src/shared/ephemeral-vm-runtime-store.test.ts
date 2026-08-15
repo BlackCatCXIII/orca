@@ -1,4 +1,13 @@
-import { mkdtempSync, readFileSync, rmSync, truncateSync, writeFileSync } from 'node:fs'
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  truncateSync,
+  writeFileSync
+} from 'node:fs'
 import type * as NodeFs from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -9,8 +18,13 @@ const filesystemFailure = vi.hoisted(() => ({
   stage: null as 'temp-fsync' | 'rename' | 'parent-dir-fsync' | 'authority-file-fsync' | null,
   swapTargetPath: null as string | null,
   swapReplacementPath: null as string | null,
+  swapTargetMode: null as 'replacement' | 'symlink' | null,
   rewriteTargetPath: null as string | null,
-  rewriteContents: null as string | null
+  rewriteContents: null as string | null,
+  swapParentPath: null as string | null,
+  swapParentMovedPath: null as string | null,
+  swapParentTargetPath: null as string | null,
+  swapParentMode: null as 'directory' | 'symlink' | null
 }))
 
 vi.mock('./secure-file-filesystem', async (importOriginal) => {
@@ -37,10 +51,23 @@ vi.mock('./secure-file-filesystem', async (importOriginal) => {
       if (filesystemFailure.stage === 'authority-file-fsync') {
         throw Object.assign(new Error('injected authority file fsync'), { code: 'EIO' })
       }
-      if (filesystemFailure.swapTargetPath && filesystemFailure.swapReplacementPath) {
-        nodeFs.renameSync(filesystemFailure.swapReplacementPath, filesystemFailure.swapTargetPath)
+      if (
+        filesystemFailure.swapTargetPath &&
+        filesystemFailure.swapReplacementPath &&
+        filesystemFailure.swapTargetMode
+      ) {
+        if (filesystemFailure.swapTargetMode === 'replacement') {
+          nodeFs.renameSync(filesystemFailure.swapReplacementPath, filesystemFailure.swapTargetPath)
+        } else {
+          nodeFs.renameSync(filesystemFailure.swapTargetPath, filesystemFailure.swapReplacementPath)
+          nodeFs.symlinkSync(
+            filesystemFailure.swapReplacementPath,
+            filesystemFailure.swapTargetPath
+          )
+        }
         filesystemFailure.swapTargetPath = null
         filesystemFailure.swapReplacementPath = null
+        filesystemFailure.swapTargetMode = null
       }
       if (filesystemFailure.rewriteTargetPath && filesystemFailure.rewriteContents) {
         nodeFs.writeFileSync(
@@ -52,6 +79,37 @@ vi.mock('./secure-file-filesystem', async (importOriginal) => {
         filesystemFailure.rewriteContents = null
       }
       actual.fsyncSecureFileDescriptorSync(descriptor)
+    },
+    fsyncSecureDirectoryDescriptorSync(descriptor: number): void {
+      if (filesystemFailure.stage === 'parent-dir-fsync') {
+        throw Object.assign(new Error('injected parent-dir-fsync'), { code: 'EINVAL' })
+      }
+      if (
+        filesystemFailure.swapParentPath &&
+        filesystemFailure.swapParentMovedPath &&
+        filesystemFailure.swapParentTargetPath &&
+        filesystemFailure.swapParentMode
+      ) {
+        const parentPath = filesystemFailure.swapParentPath
+        const movedPath = filesystemFailure.swapParentMovedPath
+        const targetPath = filesystemFailure.swapParentTargetPath
+        const mode = filesystemFailure.swapParentMode
+        nodeFs.renameSync(parentPath, movedPath)
+        if (mode === 'directory') {
+          nodeFs.mkdirSync(parentPath)
+          nodeFs.linkSync(
+            nodeFs.realpathSync(targetPath.replace(parentPath, movedPath)),
+            targetPath
+          )
+        } else {
+          nodeFs.symlinkSync(movedPath, parentPath, 'dir')
+        }
+        filesystemFailure.swapParentPath = null
+        filesystemFailure.swapParentMovedPath = null
+        filesystemFailure.swapParentTargetPath = null
+        filesystemFailure.swapParentMode = null
+      }
+      actual.fsyncSecureDirectoryDescriptorSync(descriptor)
     }
   }
 })
@@ -126,8 +184,13 @@ describe('ephemeral VM runtime store', () => {
     filesystemFailure.stage = null
     filesystemFailure.swapTargetPath = null
     filesystemFailure.swapReplacementPath = null
+    filesystemFailure.swapTargetMode = null
     filesystemFailure.rewriteTargetPath = null
     filesystemFailure.rewriteContents = null
+    filesystemFailure.swapParentPath = null
+    filesystemFailure.swapParentMovedPath = null
+    filesystemFailure.swapParentTargetPath = null
+    filesystemFailure.swapParentMode = null
     if (originalPlatform) {
       Object.defineProperty(process, 'platform', originalPlatform)
     }
@@ -418,12 +481,80 @@ describe('ephemeral VM runtime store', () => {
     )
     filesystemFailure.swapTargetPath = targetPath
     filesystemFailure.swapReplacementPath = replacementPath
+    filesystemFailure.swapTargetMode = 'replacement'
 
     expect(() => listAuthoritativeEphemeralVmRuntimes(userDataPath)).toThrow(
       EphemeralVmRuntimeStoreError
     )
     expect(listEphemeralVmRuntimes(userDataPath)).toEqual([replacementRuntime])
   })
+
+  posixIt('rejects a symbolic-link runtime-store target', () => {
+    const userDataPath = makeUserDataPath()
+    const operatorRuntime = runtimeRecord({
+      operatorRecipeCatalogSha256: 'c'.repeat(64),
+      provisionMutation: { requestSha256: 'f'.repeat(64), resolvedRef: 'a'.repeat(40) }
+    })
+    upsertEphemeralVmRuntime(userDataPath, operatorRuntime)
+    const targetPath = getEphemeralVmRuntimeStorePath(userDataPath)
+    const backingPath = join(userDataPath, 'runtime-store-backing.json')
+    renameSync(targetPath, backingPath)
+    symlinkSync(backingPath, targetPath)
+
+    expect(() => listAuthoritativeEphemeralVmRuntimes(userDataPath)).toThrow(
+      EphemeralVmRuntimeStoreError
+    )
+  })
+
+  posixIt('rejects a final-target symlink introduced after descriptor observation', () => {
+    const userDataPath = makeUserDataPath()
+    const operatorRuntime = runtimeRecord({
+      operatorRecipeCatalogSha256: 'c'.repeat(64),
+      provisionMutation: { requestSha256: 'f'.repeat(64), resolvedRef: 'a'.repeat(40) }
+    })
+    upsertEphemeralVmRuntime(userDataPath, operatorRuntime)
+    const targetPath = getEphemeralVmRuntimeStorePath(userDataPath)
+    filesystemFailure.swapTargetPath = targetPath
+    filesystemFailure.swapReplacementPath = join(userDataPath, 'observed-runtime-store.json')
+    filesystemFailure.swapTargetMode = 'symlink'
+
+    expect(() => listAuthoritativeEphemeralVmRuntimes(userDataPath)).toThrow(
+      EphemeralVmRuntimeStoreError
+    )
+    expect(listEphemeralVmRuntimes(userDataPath)).toEqual([operatorRuntime])
+  })
+
+  posixIt('rejects a non-regular runtime-store target before opening it', () => {
+    const userDataPath = makeUserDataPath()
+    const targetPath = getEphemeralVmRuntimeStorePath(userDataPath)
+    mkdirSync(targetPath)
+
+    expect(() => listAuthoritativeEphemeralVmRuntimes(userDataPath)).toThrow(
+      EphemeralVmRuntimeStoreError
+    )
+  })
+
+  posixIt.each(['directory', 'symlink'] as const)(
+    'rejects a parent %s replacement across directory fsync',
+    (mode) => {
+      const outerPath = makeUserDataPath()
+      const userDataPath = join(outerPath, 'profile')
+      mkdirSync(userDataPath)
+      const operatorRuntime = runtimeRecord({
+        operatorRecipeCatalogSha256: 'c'.repeat(64),
+        provisionMutation: { requestSha256: 'f'.repeat(64), resolvedRef: 'a'.repeat(40) }
+      })
+      upsertEphemeralVmRuntime(userDataPath, operatorRuntime)
+      filesystemFailure.swapParentPath = userDataPath
+      filesystemFailure.swapParentMovedPath = join(outerPath, 'profile-observed')
+      filesystemFailure.swapParentTargetPath = getEphemeralVmRuntimeStorePath(userDataPath)
+      filesystemFailure.swapParentMode = mode
+
+      expect(() => listAuthoritativeEphemeralVmRuntimes(userDataPath)).toThrow(
+        EphemeralVmRuntimeStoreError
+      )
+    }
+  )
 
   posixIt('rejects same-inode byte changes while establishing operator authority', () => {
     const userDataPath = makeUserDataPath()

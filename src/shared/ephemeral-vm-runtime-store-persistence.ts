@@ -57,22 +57,25 @@ export function readEphemeralVmRuntimeStore(
     }
   }
   try {
-    hardenExistingSecureFile(path)
-    const decoded = authoritativeOperatorRead
-      ? readConditionallyAuthoritativeSecureFileSync(
-          path,
-          MAX_EPHEMERAL_VM_RUNTIME_STORE_FILE_BYTES,
-          (buffer) => {
-            const value = parseEphemeralVmRuntimeStore(buffer)
-            return {
-              value,
-              requiresCriticalDurability: value.store.runtimes.some(isOperatorRuntime)
-            }
+    let decoded: ReturnType<typeof parseEphemeralVmRuntimeStore>
+    if (authoritativeOperatorRead) {
+      decoded = readConditionallyAuthoritativeSecureFileSync(
+        path,
+        MAX_EPHEMERAL_VM_RUNTIME_STORE_FILE_BYTES,
+        (buffer) => {
+          const value = parseEphemeralVmRuntimeStore(buffer)
+          return {
+            value,
+            requiresCriticalDurability: value.store.runtimes.some(isOperatorRuntime)
           }
-        )
-      : parseEphemeralVmRuntimeStore(
-          readNodeFileSyncWithinLimit(path, MAX_EPHEMERAL_VM_RUNTIME_STORE_FILE_BYTES).buffer
-        )
+        }
+      )
+    } else {
+      hardenExistingSecureFile(path)
+      decoded = parseEphemeralVmRuntimeStore(
+        readNodeFileSyncWithinLimit(path, MAX_EPHEMERAL_VM_RUNTIME_STORE_FILE_BYTES).buffer
+      )
+    }
     const features = readEphemeralVmRuntimeFeatureStore(userDataPath)
     const store: EphemeralVmRuntimeStore = {
       version: 1,
