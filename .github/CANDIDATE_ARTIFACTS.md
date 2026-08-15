@@ -1,13 +1,15 @@
 # Candidate artifacts
 
 `Candidate Artifacts` is a manual, non-publishing build of source commit
-`338bd227c12067ace0661d95f66ae4ecb5223a68`. It is intended to produce the custom-fork
+`c887a8265cf9c9dfc4beba7c1ce2ea533907165f`. It is intended to produce the custom-fork
 inputs needed before a separately authorized deployment without granting the build any
 deployment authority.
 
-The support branch intentionally differs from that runtime source: it integrates lifecycle
-contract commit `f910c801aac823bb1b0768e79d1b3c865db295ac` and later operator-catalog support while
-the workflow and policy continue to build exactly `338bd227c12067ace0661d95f66ae4ecb5223a68`.
+The workflow-control commit intentionally sits above that runtime source. Lifecycle-envelope schema
+provenance remains contract commit `f910c801aac823bb1b0768e79d1b3c865db295ac`; the runtime source
+contains the later operator-catalog, replay, and durability implementation. Every platform checkout
+continues to build exactly `c887a8265cf9c9dfc4beba7c1ce2ea533907165f`, never the control commit
+that carries this pin.
 
 ## Safety boundary
 

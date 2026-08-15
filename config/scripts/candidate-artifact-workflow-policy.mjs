@@ -11,7 +11,7 @@ const pnpmAction = 'pnpm/action-setup@f2b2b233b538f500472c7274c7012f57857d8ce0'
 const nodeAction = 'actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8'
 const uploadAction = 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02'
 const approvedActions = new Set([checkoutAction, pnpmAction, nodeAction, uploadAction])
-const expectedWorkflowDigest = '1538a0f81a61bc707de4ec0923954e3333c9e9d40563b01c4f0037cf4b083e50'
+const expectedWorkflowDigest = '30a88f5002dbba1d90907815bc1bee76df1655d2b40b3dd865481dd27c2252b9'
 
 const buildJobs = {
   'desktop-linux-x64': {
