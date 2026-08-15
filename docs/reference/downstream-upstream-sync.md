@@ -31,7 +31,15 @@ It only reports merge readiness; it never creates a merge commit or advances a b
    results, merge commit, both parent SHAs, and any deliberate deviations.
 5. Have a second reviewer inspect the merge commit and evidence. Publish the integration branch only
    through the normal reviewed path. Do not let the reporting workflow mutate or publish it.
-6. Advance the deployment's immutable Orca source/image pin only after the merge commit has passed
+6. Keep `daily-upstream-sync.yml` disabled until a separately authorized operator verifies that the
+   exact `orca-source-ci` ARC scale set is ready, the runner receives
+   `ORCA_ARTIFACT_S3_ENDPOINT`, `ORCA_CANDIDATE_ARTIFACT_BUCKET`, `AWS_ACCESS_KEY_ID`,
+   `AWS_SECRET_ACCESS_KEY`, and `AWS_REGION`, and a bucket-scoped SigV4 write plus
+   digest-verified readback succeeds without GitHub artifact or cache storage. Run both workflow
+   contract validators against the merged SHA before enabling only this workflow. If any
+   prerequisite is missing or ambiguous, leave the workflow disabled; do not enable Actions merely
+   to probe the infrastructure and never add a hosted-runner fallback.
+7. Advance the deployment's immutable Orca source/image pin only after the merge commit has passed
    the focused and full gates and the corresponding immutable artifact digest has been verified.
    Keep the prior pin available for rollback.
 
