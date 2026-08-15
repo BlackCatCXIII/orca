@@ -7,7 +7,6 @@ import {
   type EnvironmentRecipeListResult,
   type EnvironmentRecipeRuntime
 } from '../shared/environment-recipe-runtime-rpc'
-import { listEphemeralVmRuntimes } from '../shared/ephemeral-vm-runtime-store'
 import { removeEnvironment } from '../shared/runtime-environment-store'
 import {
   cleanupEphemeralVmRuntime,
@@ -45,6 +44,7 @@ import {
   operatorEnvironmentRecipeProvisionMutationBinding,
   requireEnvironmentRecipeProvisionReplayBinding
 } from './environment-recipe-provision-mutation-binding'
+import { listEnvironmentRecipeProvisionReplayRuntimes } from './environment-recipe-provision-replay'
 import { failedOperation, invalidLifecycleState } from './environment-recipe-rpc-errors'
 
 export { EnvironmentRecipeRpcError } from './environment-recipe-operation-control'
@@ -103,9 +103,10 @@ export function provisionEnvironmentRecipeForRpc(
       const runtimeId =
         mutation.runtimeId ??
         mutationRuntimeId(deps.userDataPath, deps.pairedDeviceId, params.clientMutationId)
-      const existing = listEphemeralVmRuntimes(deps.userDataPath).find(
-        (runtime) => runtime.id === runtimeId
-      )
+      const existing = listEnvironmentRecipeProvisionReplayRuntimes(
+        deps.userDataPath,
+        Boolean(deps.operatorRecipeCatalog)
+      ).find((runtime) => runtime.id === runtimeId)
       if (existing?.operatorRecipeCatalogSha256 && !deps.operatorRecipeCatalog) {
         throw new EnvironmentRecipeRpcError(
           'environment_recipe_not_found',

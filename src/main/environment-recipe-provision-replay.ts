@@ -1,4 +1,7 @@
-import { listEphemeralVmRuntimes } from '../shared/ephemeral-vm-runtime-store'
+import {
+  listAuthoritativeEphemeralVmRuntimes,
+  listEphemeralVmRuntimes
+} from '../shared/ephemeral-vm-runtime-store'
 import {
   classifyDurableEnvironmentRecipeMutationFromStore,
   readDurableEnvironmentRecipeMutation,
@@ -17,6 +20,16 @@ export class EnvironmentRecipeProvisionReplayConflict extends Error {
     super('Environment recipe provision replay binding conflicts with durable state.')
     this.name = 'EnvironmentRecipeProvisionReplayConflict'
   }
+}
+
+export function listEnvironmentRecipeProvisionReplayRuntimes(
+  userDataPath: string,
+  operatorCatalogEnabled: boolean
+) {
+  const listRuntimes = operatorCatalogEnabled
+    ? listAuthoritativeEphemeralVmRuntimes
+    : listEphemeralVmRuntimes
+  return listRuntimes(userDataPath)
 }
 
 export function resolveEnvironmentRecipeProvisionReplay(
@@ -62,7 +75,7 @@ function resolveRetainedRuntimeBinding(
   requestSha256: string,
   operatorRecipeCatalogSha256: string
 ): EnvironmentRecipeProvisionReplay {
-  const matches = listEphemeralVmRuntimes(userDataPath).filter(
+  const matches = listAuthoritativeEphemeralVmRuntimes(userDataPath).filter(
     (runtime) =>
       runtime.provisionMutation?.requestSha256 === requestSha256 &&
       runtime.operatorRecipeCatalogSha256 === operatorRecipeCatalogSha256

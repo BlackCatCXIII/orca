@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type * as SecureFileModule from '../shared/secure-file'
 import type * as SecureFileFilesystem from '../shared/secure-file-filesystem'
 
-type CriticalSecureFileStage = 'temp-fsync' | 'rename' | 'parent-dir-fsync'
+type CriticalSecureFileStage = 'temp-fsync' | 'rename' | 'parent-dir-fsync' | 'authority-file-fsync'
 
 const filesystemFailure = vi.hoisted(() => ({
   stage: null as CriticalSecureFileStage | null,
@@ -40,6 +40,12 @@ vi.mock('../shared/secure-file-filesystem', async (importOriginal) => {
       }
       actual.renameSecureFileSync(sourcePath, targetPath)
       filesystemFailure.lastRenamedTargetPath = targetPath
+    },
+    fsyncSecureFileDescriptorSync(descriptor: number): void {
+      if (filesystemFailure.stage === 'authority-file-fsync') {
+        throw Object.assign(new Error('injected authority file fsync'), { code: 'EIO' })
+      }
+      actual.fsyncSecureFileDescriptorSync(descriptor)
     }
   }
 })
@@ -67,6 +73,7 @@ vi.mock('../shared/secure-file', async (importOriginal) => {
 })
 
 import {
+  EphemeralVmRuntimeStoreError,
   getEphemeralVmRuntimeStorePath,
   upsertEphemeralVmRuntime
 } from '../shared/ephemeral-vm-runtime-store'
@@ -75,7 +82,8 @@ import type { EphemeralVmRuntimeStatus } from '../shared/ephemeral-vm-runtimes'
 import type { EnvironmentRecipeRuntime } from '../shared/environment-recipe-runtime-rpc'
 import {
   resetEnvironmentRecipeOperationControlForTests,
-  runIdempotentEnvironmentRecipeMutation
+  runIdempotentEnvironmentRecipeMutation,
+  type EnvironmentRecipeMutationControl
 } from './environment-recipe-operation-control'
 import {
   getEnvironmentRecipeOperationJournalPath,
@@ -279,13 +287,46 @@ describe('environment recipe operation durability ordering', () => {
       const durable = readDurableEnvironmentRecipeMutation(userDataPath, identity)
       expect(durable?.state).toBe('prepared')
       expect(
-        durable && classifyDurableEnvironmentRecipeMutationFromStore(userDataPath, durable)
-      ).toBe('completed')
+        () => durable && classifyDurableEnvironmentRecipeMutationFromStore(userDataPath, durable)
+      ).toThrow(EphemeralVmRuntimeStoreError)
+      resetEnvironmentRecipeOperationControlForTests()
+      const replayOperation = vi.fn(async (_control: EnvironmentRecipeMutationControl) =>
+        result('completion-runtime', 'running')
+      )
+      expect(() =>
+        runIdempotentEnvironmentRecipeMutation(
+          userDataPath,
+          identity.pairedDeviceId,
+          identity.method,
+          { clientMutationId: identity.clientMutationId },
+          replayOperation,
+          { operatorRecipeCatalogSha256 }
+        )
+      ).toThrow(expect.objectContaining({ code: 'environment_recipe_failed' }))
+      expect(replayOperation).not.toHaveBeenCalled()
+
+      filesystemFailure.stage = 'authority-file-fsync'
+      expect(
+        () => durable && classifyDurableEnvironmentRecipeMutationFromStore(userDataPath, durable)
+      ).toThrow(EphemeralVmRuntimeStoreError)
+      expect(() =>
+        runIdempotentEnvironmentRecipeMutation(
+          userDataPath,
+          identity.pairedDeviceId,
+          identity.method,
+          { clientMutationId: identity.clientMutationId },
+          replayOperation,
+          { operatorRecipeCatalogSha256 }
+        )
+      ).toThrow(expect.objectContaining({ code: 'environment_recipe_failed' }))
+      expect(replayOperation).not.toHaveBeenCalled()
 
       filesystemFailure.stage = null
+      expect(
+        durable && classifyDurableEnvironmentRecipeMutationFromStore(userDataPath, durable)
+      ).toBe('completed')
       filesystemFailure.targetPath = null
-      resetEnvironmentRecipeOperationControlForTests()
-      const replayOperation = vi.fn(async (control) => {
+      replayOperation.mockImplementation(async (control) => {
         expect(control).toMatchObject({
           provisionRef,
           runtimeId: 'completion-runtime'
@@ -341,13 +382,27 @@ describe('environment recipe operation durability ordering', () => {
       const durable = readDurableEnvironmentRecipeMutation(userDataPath, identity)
       expect(durable?.state).toBe('prepared')
       expect(
-        durable && classifyDurableEnvironmentRecipeMutationFromStore(userDataPath, durable)
-      ).toBe('terminal')
-
-      filesystemFailure.stage = null
-      filesystemFailure.targetPath = null
+        () => durable && classifyDurableEnvironmentRecipeMutationFromStore(userDataPath, durable)
+      ).toThrow(EphemeralVmRuntimeStoreError)
       resetEnvironmentRecipeOperationControlForTests()
       const replayOperation = vi.fn()
+      expect(() =>
+        runIdempotentEnvironmentRecipeMutation(
+          userDataPath,
+          identity.pairedDeviceId,
+          identity.method,
+          { clientMutationId: identity.clientMutationId },
+          replayOperation,
+          { operatorRecipeCatalogSha256 }
+        )
+      ).toThrow(expect.objectContaining({ code: 'environment_recipe_failed' }))
+      expect(replayOperation).not.toHaveBeenCalled()
+
+      filesystemFailure.stage = null
+      expect(
+        durable && classifyDurableEnvironmentRecipeMutationFromStore(userDataPath, durable)
+      ).toBe('terminal')
+      filesystemFailure.targetPath = null
       expect(() =>
         runIdempotentEnvironmentRecipeMutation(
           userDataPath,
@@ -460,12 +515,21 @@ describe('environment recipe operation durability ordering', () => {
     ).rejects.toMatchObject({ code: 'environment_recipe_failed' })
 
     expect(readDurableEnvironmentRecipeMutation(userDataPath, identity)?.state).toBe('prepared')
-    filesystemFailure.stage = null
-    filesystemFailure.targetPath = null
     if (stage === 'parent-dir-fsync') {
+      expect(() => evictBackedMutation(userDataPath, clientMutationId)).toThrow(
+        EphemeralVmRuntimeStoreError
+      )
+      filesystemFailure.stage = 'authority-file-fsync'
+      expect(() => evictBackedMutation(userDataPath, clientMutationId)).toThrow(
+        EphemeralVmRuntimeStoreError
+      )
+      filesystemFailure.stage = null
+      filesystemFailure.targetPath = null
       evictBackedMutation(userDataPath, clientMutationId)
       expect(readDurableEnvironmentRecipeMutation(userDataPath, identity)).toBeNull()
     } else {
+      filesystemFailure.stage = null
+      filesystemFailure.targetPath = null
       expect(() => evictBackedMutation(userDataPath, clientMutationId)).toThrowError(
         expect.objectContaining({ code: 'capacity' })
       )

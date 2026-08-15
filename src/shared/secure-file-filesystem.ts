@@ -12,3 +12,7 @@ export function fsyncSecurePathSync(path: string, flags: 'r' | 'r+'): void {
     closeSync(descriptor)
   }
 }
+
+export function fsyncSecureFileDescriptorSync(descriptor: number): void {
+  fsyncSync(descriptor)
+}
