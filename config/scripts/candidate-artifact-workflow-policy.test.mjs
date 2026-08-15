@@ -68,6 +68,18 @@ test('keeps candidate runtime source distinct from the integrated support contra
   expect(documentation).toContain(supportRevision)
 })
 
+test('keeps candidate execution disabled in the source fork until controlled relocation', async () => {
+  const documentation = await readFile(resolve('.github/CANDIDATE_ARTIFACTS.md'), 'utf8')
+  expect(documentation).toContain(
+    'It must not be enabled or executed in the `BlackCatCXIII/orca` source\n' +
+      'fork: repository Actions remain globally disabled there permanently.'
+  )
+  expect(documentation).toContain(
+    'Execution requires relocating\n' +
+      'the reviewed workflow and contracts to the already-controlled `orca-deployment` repository'
+  )
+})
+
 /** @type {Array<[string, (workflow: any) => void]>} */
 const adversarialCases = [
   ['push trigger', (workflow) => (workflow.on.push = {})],

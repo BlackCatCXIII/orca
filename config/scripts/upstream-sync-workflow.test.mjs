@@ -5,8 +5,22 @@ import { describe, expect, it } from 'vitest'
 import { validateDailyUpstreamSyncWorkflow } from './upstream-sync-workflow-contract.mjs'
 
 const workflowPath = '.github/workflows/daily-upstream-sync.yml'
+const runbookPath = 'docs/reference/downstream-upstream-sync.md'
 
 describe('daily upstream sync workflow', () => {
+  it('keeps source-fork Actions permanently disabled until controlled relocation', () => {
+    const runbook = readFileSync(runbookPath, 'utf8')
+    expect(runbook).toContain(
+      'The `BlackCatCXIII/orca` repository Actions must remain globally disabled permanently.'
+    )
+    expect(runbook).toContain(
+      'never temporarily enable repository Actions to make GitHub register it'
+    )
+    expect(runbook).toContain(
+      'requires relocating the exact reviewed workflow and contracts to\n' +
+        '   the already-controlled `orca-deployment` repository'
+    )
+  })
   it('stays read-only, credential-free, exact-SHA, and bounded', () => {
     const source = readFileSync(workflowPath, 'utf8')
     expect(validateDailyUpstreamSyncWorkflow(source)).toEqual([])

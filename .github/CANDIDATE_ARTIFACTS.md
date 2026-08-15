@@ -24,12 +24,16 @@ install it for testing; it is not a distribution signature. The iOS output is an
 Simulator `.app` archive and cannot be installed on a physical device. The macOS and Windows
 packages are unsigned and may be blocked or warn when opened.
 
-## Immediate runnable slice
+## Reference execution slice
 
-Only the policy job and Linux x64 build run now, both on the exact `orca-source-ci` ARC label.
-Linux ARM64, Windows, macOS, Android, and iOS jobs are intentionally absent until equivalent
-private runners and storage paths are reviewed. Their qualification declarations remain in
-`config/candidate-artifacts.json`; preserving policy does not make those platforms executable.
+The reviewed control defines only the policy job and Linux x64 build, both on the exact
+`orca-source-ci` ARC label. It must not be enabled or executed in the `BlackCatCXIII/orca` source
+fork: repository Actions remain globally disabled there permanently. Execution requires relocating
+the reviewed workflow and contracts to the already-controlled `orca-deployment` repository and
+repo-scoping the ARC scale set there. Linux ARM64, Windows, macOS, Android, and iOS jobs remain
+absent until equivalent private runners and storage paths are reviewed. Their qualification
+declarations remain in `config/candidate-artifacts.json`; preserving policy does not make those
+platforms executable.
 
 The Linux x64 bundle contains only its exact filename declared in
 `config/candidate-artifacts.json` plus `provenance.json`:
