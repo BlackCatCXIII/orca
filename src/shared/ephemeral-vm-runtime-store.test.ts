@@ -381,6 +381,13 @@ describe('ephemeral VM runtime store', () => {
     expect(listEphemeralVmRuntimes(userDataPath)).toEqual([])
   })
 
+  it('keeps genuinely missing runtime stores empty', () => {
+    const userDataPath = makeUserDataPath()
+
+    expect(listEphemeralVmRuntimes(userDataPath)).toEqual([])
+    expect(listAuthoritativeEphemeralVmRuntimes(userDataPath)).toEqual([])
+  })
+
   it('keeps local-only runtime stores on best-effort durability', () => {
     const userDataPath = makeUserDataPath()
     Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
@@ -501,6 +508,17 @@ describe('ephemeral VM runtime store', () => {
     renameSync(targetPath, backingPath)
     symlinkSync(backingPath, targetPath)
 
+    expect(() => listAuthoritativeEphemeralVmRuntimes(userDataPath)).toThrow(
+      EphemeralVmRuntimeStoreError
+    )
+  })
+
+  posixIt('rejects a dangling symbolic-link runtime-store target', () => {
+    const userDataPath = makeUserDataPath()
+    const targetPath = getEphemeralVmRuntimeStorePath(userDataPath)
+    symlinkSync(join(userDataPath, 'missing-runtime-store.json'), targetPath)
+
+    expect(listEphemeralVmRuntimes(userDataPath)).toEqual([])
     expect(() => listAuthoritativeEphemeralVmRuntimes(userDataPath)).toThrow(
       EphemeralVmRuntimeStoreError
     )

@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs'
+import { existsSync, lstatSync } from 'node:fs'
 import { join } from 'node:path'
 import { JsonStringifyByteLimitError } from './node-bounded-json-stringify'
 import { readNodeFileSyncWithinLimit } from './node-bounded-file-reader'
@@ -182,11 +182,17 @@ function readEphemeralVmRuntimeStore(
   authoritativeOperatorRead = false
 ): EphemeralVmRuntimeStore {
   const path = getEphemeralVmRuntimeStorePath(userDataPath)
-  if (!existsSync(path)) {
-    return { version: 1, runtimes: [] }
-  }
   try {
     if (authoritativeOperatorRead) {
+      try {
+        lstatSync(path)
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code
+        if (code === 'ENOENT' || code === 'ENOTDIR') {
+          return { version: 1, runtimes: [] }
+        }
+        throw error
+      }
       return readConditionallyAuthoritativeSecureFileSync(
         path,
         MAX_EPHEMERAL_VM_RUNTIME_STORE_FILE_BYTES,
@@ -198,6 +204,9 @@ function readEphemeralVmRuntimeStore(
           }
         }
       )
+    }
+    if (!existsSync(path)) {
+      return { version: 1, runtimes: [] }
     }
     hardenExistingSecureFile(path)
     return parseEphemeralVmRuntimeStore(
