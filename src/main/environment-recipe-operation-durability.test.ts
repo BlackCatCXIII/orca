@@ -302,7 +302,7 @@ describe('environment recipe operation durability ordering', () => {
       const replayOperation = vi.fn(async (_control: EnvironmentRecipeMutationControl) =>
         result('completion-runtime', 'running')
       )
-      expect(() =>
+      await expect(
         runIdempotentEnvironmentRecipeMutation(
           userDataPath,
           identity.pairedDeviceId,
@@ -311,14 +311,14 @@ describe('environment recipe operation durability ordering', () => {
           replayOperation,
           { operatorRecipeCatalogSha256 }
         )
-      ).toThrow(expect.objectContaining({ code: 'environment_recipe_failed' }))
+      ).rejects.toMatchObject({ code: 'environment_recipe_failed' })
       expect(replayOperation).not.toHaveBeenCalled()
 
       filesystemFailure.stage = 'authority-file-fsync'
       expect(
         () => durable && classifyDurableEnvironmentRecipeMutationFromStore(userDataPath, durable)
       ).toThrow(EphemeralVmRuntimeStoreError)
-      expect(() =>
+      await expect(
         runIdempotentEnvironmentRecipeMutation(
           userDataPath,
           identity.pairedDeviceId,
@@ -327,7 +327,7 @@ describe('environment recipe operation durability ordering', () => {
           replayOperation,
           { operatorRecipeCatalogSha256 }
         )
-      ).toThrow(expect.objectContaining({ code: 'environment_recipe_failed' }))
+      ).rejects.toMatchObject({ code: 'environment_recipe_failed' })
       expect(replayOperation).not.toHaveBeenCalled()
 
       filesystemFailure.stage = null
@@ -395,7 +395,7 @@ describe('environment recipe operation durability ordering', () => {
       ).toThrow(EphemeralVmRuntimeStoreError)
       resetEnvironmentRecipeOperationControlForTests()
       const replayOperation = vi.fn()
-      expect(() =>
+      await expect(
         runIdempotentEnvironmentRecipeMutation(
           userDataPath,
           identity.pairedDeviceId,
@@ -404,7 +404,7 @@ describe('environment recipe operation durability ordering', () => {
           replayOperation,
           { operatorRecipeCatalogSha256 }
         )
-      ).toThrow(expect.objectContaining({ code: 'environment_recipe_failed' }))
+      ).rejects.toMatchObject({ code: 'environment_recipe_failed' })
       expect(replayOperation).not.toHaveBeenCalled()
 
       filesystemFailure.stage = null
@@ -412,7 +412,7 @@ describe('environment recipe operation durability ordering', () => {
         durable && classifyDurableEnvironmentRecipeMutationFromStore(userDataPath, durable)
       ).toBe('terminal')
       filesystemFailure.targetPath = null
-      expect(() =>
+      await expect(
         runIdempotentEnvironmentRecipeMutation(
           userDataPath,
           identity.pairedDeviceId,
@@ -421,7 +421,7 @@ describe('environment recipe operation durability ordering', () => {
           replayOperation,
           { operatorRecipeCatalogSha256 }
         )
-      ).toThrow(expect.objectContaining({ code: 'environment_recipe_conflict' }))
+      ).rejects.toMatchObject({ code: 'environment_recipe_conflict' })
       expect(replayOperation).not.toHaveBeenCalled()
     }
   )

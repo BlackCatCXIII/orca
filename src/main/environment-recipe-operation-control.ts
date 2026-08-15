@@ -63,6 +63,28 @@ export function runIdempotentEnvironmentRecipeMutation<T extends { clientMutatio
   operation: (control: EnvironmentRecipeMutationControl) => Promise<EnvironmentRecipeRuntime>,
   options: { operatorRecipeCatalogSha256?: string } = {}
 ): Promise<EnvironmentRecipeRuntime> {
+  try {
+    return startIdempotentEnvironmentRecipeMutation(
+      profilePath,
+      pairedDeviceId,
+      method,
+      params,
+      operation,
+      options
+    )
+  } catch (error) {
+    return Promise.reject(error)
+  }
+}
+
+function startIdempotentEnvironmentRecipeMutation<T extends { clientMutationId: string }>(
+  profilePath: string,
+  pairedDeviceId: string,
+  method: string,
+  params: T,
+  operation: (control: EnvironmentRecipeMutationControl) => Promise<EnvironmentRecipeRuntime>,
+  options: { operatorRecipeCatalogSha256?: string }
+): Promise<EnvironmentRecipeRuntime> {
   const key = `${normalizeEnvironmentRecipeProfilePath(profilePath)}\0${pairedDeviceId}\0${method}\0${params.clientMutationId}`
   const fingerprint = canonicalEnvironmentRecipeMutationJson(params)
   const requestSha256 = environmentRecipeMutationRequestSha256(params)

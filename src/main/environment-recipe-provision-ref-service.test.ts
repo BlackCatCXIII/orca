@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -17,7 +17,8 @@ import {
 } from './environment-recipe-operation-journal'
 import {
   environmentRecipeMutationRequestSha256,
-  environmentRecipeMutationRuntimeId
+  environmentRecipeMutationRuntimeId,
+  runIdempotentEnvironmentRecipeMutation
 } from './environment-recipe-operation-control'
 
 const provisionMock = vi.hoisted(() => vi.fn())
@@ -403,22 +404,82 @@ describe('operator environment recipe provision ref service', () => {
     expect(provisionMock).toHaveBeenCalledTimes(2)
   })
 
-  it('fails closed before recipe invocation when the durable pin cannot be written', async () => {
+  it('returns a rejected promise when the authoritative replay pre-read fails', async () => {
     const blockedUserDataPath = join(userDataPath, 'not-a-directory')
     writeFileSync(blockedUserDataPath, 'blocked', 'utf8')
     const resolver = vi.fn().mockResolvedValue('a'.repeat(40))
 
-    await expect(
-      provisionEnvironmentRecipeForRpc(
-        { ...dependencies(targetRepo, resolver), userDataPath: blockedUserDataPath },
-        {
-          repoId: targetRepo.id,
-          recipeId: recipe.id,
-          clientMutationId: 'journal-write-failure'
-        }
-      )
-    ).rejects.toMatchObject({ code: 'environment_recipe_failed' })
+    const result = provisionEnvironmentRecipeForRpc(
+      { ...dependencies(targetRepo, resolver), userDataPath: blockedUserDataPath },
+      {
+        repoId: targetRepo.id,
+        recipeId: recipe.id,
+        clientMutationId: 'replay-pre-read-failure'
+      }
+    )
+
+    expect(result).toBeInstanceOf(Promise)
+    await expect(result).rejects.toMatchObject({ code: 'environment_recipe_failed' })
+    expect(resolver).not.toHaveBeenCalled()
+    expect(provisionMock).not.toHaveBeenCalled()
+  })
+
+  it('fails closed before recipe invocation when the durable pin cannot be written', async () => {
+    const resolver = vi.fn().mockImplementation(async () => {
+      mkdirSync(getEnvironmentRecipeOperationJournalPath(userDataPath))
+      return 'a'.repeat(40)
+    })
+
+    const result = provisionEnvironmentRecipeForRpc(dependencies(targetRepo, resolver), {
+      repoId: targetRepo.id,
+      recipeId: recipe.id,
+      clientMutationId: 'journal-write-failure'
+    })
+
+    expect(result).toBeInstanceOf(Promise)
+    await expect(result).rejects.toMatchObject({ code: 'environment_recipe_failed' })
     expect(resolver).toHaveBeenCalledOnce()
+    expect(provisionMock).not.toHaveBeenCalled()
+  })
+
+  it('returns a rejected promise for an in-memory fingerprint conflict', async () => {
+    const resolver = vi.fn(() => new Promise<string>(() => undefined))
+    const params = {
+      repoId: targetRepo.id,
+      recipeId: recipe.id,
+      clientMutationId: 'in-memory-fingerprint-conflict'
+    }
+    void provisionEnvironmentRecipeForRpc(dependencies(targetRepo, resolver), params)
+
+    const conflict = provisionEnvironmentRecipeForRpc(dependencies(targetRepo, resolver), {
+      ...params,
+      branch: 'different'
+    })
+
+    expect(conflict).toBeInstanceOf(Promise)
+    await expect(conflict).rejects.toMatchObject({ code: 'environment_recipe_conflict' })
+    expect(provisionMock).not.toHaveBeenCalled()
+  })
+
+  it('returns a rejected promise when in-memory operation capacity is full', async () => {
+    for (let index = 0; index < 256; index += 1) {
+      void runIdempotentEnvironmentRecipeMutation(
+        userDataPath,
+        'capacity-device',
+        'capacity-method',
+        { clientMutationId: `capacity-${index}` },
+        () => new Promise(() => undefined)
+      )
+    }
+
+    const capacity = provisionEnvironmentRecipeForRpc(dependencies(), {
+      repoId: targetRepo.id,
+      recipeId: recipe.id,
+      clientMutationId: 'capacity-public-boundary'
+    })
+
+    expect(capacity).toBeInstanceOf(Promise)
+    await expect(capacity).rejects.toMatchObject({ code: 'environment_recipe_conflict' })
     expect(provisionMock).not.toHaveBeenCalled()
   })
 
