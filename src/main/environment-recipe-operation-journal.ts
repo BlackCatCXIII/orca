@@ -171,7 +171,7 @@ function writeJournal(userDataPath: string, entries: DurableEnvironmentRecipeMut
     MAX_JOURNAL_FILE_BYTES
   ).serialized
   writeSecureFile(getEnvironmentRecipeOperationJournalPath(userDataPath), serialized, {
-    durable: true
+    durability: 'critical'
   })
 }
 

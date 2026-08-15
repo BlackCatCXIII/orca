@@ -7,12 +7,18 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 const openedPaths = vi.hoisted(
   () => [] as { path: string; flags: string | number; ownerWritable: boolean }[]
 )
+const directoryFsyncFailure = vi.hoisted(() => ({ code: null as string | null }))
 
 vi.mock('node:fs', async () => {
   const actual = await vi.importActual<typeof NodeFs>('node:fs')
   return {
     ...actual,
     openSync: (path: NodeFs.PathLike, flags: string | number, mode?: NodeFs.Mode) => {
+      if (actual.statSync(path).isDirectory() && directoryFsyncFailure.code) {
+        throw Object.assign(new Error('directory fsync unsupported'), {
+          code: directoryFsyncFailure.code
+        })
+      }
       openedPaths.push({
         path: String(path),
         flags,
@@ -25,6 +31,7 @@ vi.mock('node:fs', async () => {
 
 import {
   bestEffortFsyncDirectorySync,
+  fsyncDirectorySync,
   fsyncFileSync,
   writeDurableSecureJsonFile
 } from './secure-file'
@@ -33,6 +40,7 @@ const createdPaths: string[] = []
 
 afterEach(() => {
   openedPaths.length = 0
+  directoryFsyncFailure.code = null
   for (const path of createdPaths.splice(0)) {
     rmSync(path, { recursive: true, force: true })
   }
@@ -86,4 +94,16 @@ describe('secure file fsync flags', () => {
 
     expect(openedPaths).toMatchObject([{ path: directory, flags: 'r' }])
   })
+
+  posixIt.each(['EINVAL', 'ENOTSUP', 'EOPNOTSUPP'])(
+    'keeps %s directory fsync unsupported in best-effort mode',
+    (code) => {
+      const directory = mkdtempSync(join(tmpdir(), 'orca-directory-fsync-unsupported-'))
+      createdPaths.push(directory)
+      directoryFsyncFailure.code = code
+
+      expect(() => bestEffortFsyncDirectorySync(directory)).not.toThrow()
+      expect(() => fsyncDirectorySync(directory)).toThrow(expect.objectContaining({ code }))
+    }
+  )
 })

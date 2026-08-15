@@ -2,7 +2,10 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { JsonStringifyByteLimitError } from './node-bounded-json-stringify'
 import { readNodeFileSyncWithinLimit } from './node-bounded-file-reader'
-import { writeDurableSecureJsonFileWithinLimit } from './bounded-secure-json-file'
+import {
+  writeCriticalSecureJsonFileWithinLimit,
+  writeDurableSecureJsonFileWithinLimit
+} from './bounded-secure-json-file'
 import { hardenExistingSecureFile } from './secure-file'
 import { parseStrictUtf8Json } from './strict-json'
 import {
@@ -43,12 +46,16 @@ export function upsertEphemeralVmRuntime(
 ): EphemeralVmRuntimeRecord {
   const parsed = EphemeralVmRuntimeRecordSchema.parse(record)
   const store = readEphemeralVmRuntimeStore(userDataPath)
-  writeEphemeralVmRuntimeStore(userDataPath, {
-    version: 1,
-    runtimes: [...store.runtimes.filter((entry) => entry.id !== parsed.id), parsed].sort(
-      compareRuntimeRecords
-    )
-  })
+  writeEphemeralVmRuntimeStore(
+    userDataPath,
+    {
+      version: 1,
+      runtimes: [...store.runtimes.filter((entry) => entry.id !== parsed.id), parsed].sort(
+        compareRuntimeRecords
+      )
+    },
+    isOperatorRuntime(parsed) || store.runtimes.some(isOperatorRuntime)
+  )
   return parsed
 }
 
@@ -106,12 +113,16 @@ export function updateEphemeralVmRuntimeStatus(
     ...(args.recipeResult ? { recipeResult: args.recipeResult } : {}),
     updatedAt: args.updatedAt ?? Date.now()
   })
-  writeEphemeralVmRuntimeStore(userDataPath, {
-    version: 1,
-    runtimes: store.runtimes
-      .map((entry) => (entry.id === id ? next : entry))
-      .sort(compareRuntimeRecords)
-  })
+  writeEphemeralVmRuntimeStore(
+    userDataPath,
+    {
+      version: 1,
+      runtimes: store.runtimes
+        .map((entry) => (entry.id === id ? next : entry))
+        .sort(compareRuntimeRecords)
+    },
+    store.runtimes.some(isOperatorRuntime)
+  )
   return next
 }
 
@@ -127,10 +138,14 @@ export function removeEphemeralVmRuntime(
       `Unknown ephemeral VM runtime: ${id}`
     )
   }
-  writeEphemeralVmRuntimeStore(userDataPath, {
-    version: 1,
-    runtimes: store.runtimes.filter((entry) => entry.id !== id)
-  })
+  writeEphemeralVmRuntimeStore(
+    userDataPath,
+    {
+      version: 1,
+      runtimes: store.runtimes.filter((entry) => entry.id !== id)
+    },
+    store.runtimes.some(isOperatorRuntime)
+  )
   return existing
 }
 
@@ -171,10 +186,17 @@ function assertUniqueRuntimeIds(runtimes: EphemeralVmRuntimeRecord[]): void {
   }
 }
 
-function writeEphemeralVmRuntimeStore(userDataPath: string, store: EphemeralVmRuntimeStore): void {
+function writeEphemeralVmRuntimeStore(
+  userDataPath: string,
+  store: EphemeralVmRuntimeStore,
+  operatorCritical: boolean
+): void {
   const path = getEphemeralVmRuntimeStorePath(userDataPath)
   try {
-    writeDurableSecureJsonFileWithinLimit(
+    const writeStore = operatorCritical
+      ? writeCriticalSecureJsonFileWithinLimit
+      : writeDurableSecureJsonFileWithinLimit
+    writeStore(
       path,
       EphemeralVmRuntimeStoreSchema.parse(store),
       MAX_EPHEMERAL_VM_RUNTIME_STORE_FILE_BYTES
@@ -188,6 +210,10 @@ function writeEphemeralVmRuntimeStore(userDataPath: string, store: EphemeralVmRu
     }
     throw error
   }
+}
+
+function isOperatorRuntime(runtime: EphemeralVmRuntimeRecord): boolean {
+  return runtime.operatorRecipeCatalogSha256 !== undefined
 }
 
 function compareRuntimeRecords(a: EphemeralVmRuntimeRecord, b: EphemeralVmRuntimeRecord): number {

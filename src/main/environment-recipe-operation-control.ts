@@ -134,8 +134,8 @@ export function runIdempotentEnvironmentRecipeMutation<T extends { clientMutatio
       if (durable) {
         try {
           completeDurableEnvironmentRecipeMutation(profilePath, identity)
-        } catch {
-          // The prepared pin remains replay-safe even when best-effort retention marking fails.
+        } catch (error) {
+          throw journalFailure(error)
         }
       }
       return result

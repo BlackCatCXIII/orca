@@ -13,6 +13,9 @@ import {
   upsertEphemeralVmRuntime
 } from './ephemeral-vm-runtime-store'
 import type { EphemeralVmRuntimeRecord } from './ephemeral-vm-runtimes'
+import { __setCriticalSecureFileTestHooksForTests } from './secure-file'
+
+const posixIt = process.platform === 'win32' ? it.skip : it
 
 function pairingCode(endpoint = 'wss://sandbox.example.com'): string {
   return encodePairingOffer({
@@ -67,6 +70,7 @@ describe('ephemeral VM runtime store', () => {
   })
 
   afterEach(() => {
+    __setCriticalSecureFileTestHooksForTests(null)
     if (originalPlatform) {
       Object.defineProperty(process, 'platform', originalPlatform)
     }
@@ -255,5 +259,60 @@ describe('ephemeral VM runtime store', () => {
       )
     ).toThrow(EphemeralVmRuntimeStoreError)
     expect(listEphemeralVmRuntimes(userDataPath)).toEqual([])
+  })
+
+  it('keeps local-only runtime stores on best-effort durability', () => {
+    const userDataPath = makeUserDataPath()
+    __setCriticalSecureFileTestHooksForTests({ platform: 'win32' })
+
+    expect(() => upsertEphemeralVmRuntime(userDataPath, runtimeRecord())).not.toThrow()
+    expect(listEphemeralVmRuntimes(userDataPath)).toHaveLength(1)
+  })
+
+  it('requires critical durability to publish or remove operator runtimes', () => {
+    const userDataPath = makeUserDataPath()
+    const operatorRuntime = runtimeRecord({
+      operatorRecipeCatalogSha256: 'c'.repeat(64),
+      provisionMutation: { requestSha256: 'f'.repeat(64), resolvedRef: 'a'.repeat(40) }
+    })
+    __setCriticalSecureFileTestHooksForTests({ platform: 'win32' })
+
+    expect(() => upsertEphemeralVmRuntime(userDataPath, operatorRuntime)).toThrow(
+      'Critical secure-file durability is unavailable on Windows.'
+    )
+    expect(listEphemeralVmRuntimes(userDataPath)).toEqual([])
+
+    writeFileSync(
+      getEphemeralVmRuntimeStorePath(userDataPath),
+      JSON.stringify({ version: 1, runtimes: [operatorRuntime] })
+    )
+    __setCriticalSecureFileTestHooksForTests({ platform: 'win32' })
+
+    expect(() =>
+      upsertEphemeralVmRuntime(userDataPath, runtimeRecord({ id: 'local-runtime' }))
+    ).toThrow('Critical secure-file durability is unavailable on Windows.')
+    expect(() => removeEphemeralVmRuntime(userDataPath, operatorRuntime.id)).toThrow(
+      'Critical secure-file durability is unavailable on Windows.'
+    )
+    expect(listEphemeralVmRuntimes(userDataPath)).toEqual([operatorRuntime])
+  })
+
+  posixIt('propagates unsupported operator parent-directory durability', () => {
+    const userDataPath = makeUserDataPath()
+    const error = Object.assign(new Error('directory fsync unsupported'), { code: 'EINVAL' })
+    __setCriticalSecureFileTestHooksForTests({
+      beforeStage: (stage) => {
+        if (stage === 'parent-dir-fsync') {
+          throw error
+        }
+      }
+    })
+
+    expect(() =>
+      upsertEphemeralVmRuntime(
+        userDataPath,
+        runtimeRecord({ operatorRecipeCatalogSha256: 'c'.repeat(64) })
+      )
+    ).toThrow(error)
   })
 })

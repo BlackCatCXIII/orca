@@ -45,6 +45,15 @@ const DEFAULT_HARDENING_CACHE_BOUNDS: SecurePathHardeningCacheBounds = {
 
 const UNSUPPORTED_DIRECTORY_FSYNC_CODES = new Set(['EINVAL', 'ENOTSUP', 'EOPNOTSUPP'])
 
+export type CriticalSecureFileStage = 'temp-fsync' | 'rename' | 'parent-dir-fsync'
+
+type CriticalSecureFileTestHooks = {
+  platform?: NodeJS.Platform
+  beforeStage?: (stage: CriticalSecureFileStage, targetPath: string) => void
+}
+
+let criticalSecureFileTestHooks: CriticalSecureFileTestHooks | null = null
+
 // Why: PowerShell hardening (~1-1.5s) stalls the main thread, so cache idempotent re-hardens per process.
 let hardenedPathsThisProcess = new SecurePathHardeningCache<HardenedPathCacheEntry>(
   DEFAULT_HARDENING_CACHE_BOUNDS
@@ -99,8 +108,13 @@ export function writeDurableSecureJsonFile(targetPath: string, value: unknown): 
 export function writeSecureFile(
   targetPath: string,
   contents: string,
-  options: { durable?: boolean } = {}
+  options: { durable?: boolean; durability?: 'critical' } = {}
 ): void {
+  const critical = options.durability === 'critical'
+  const platform = criticalSecureFileTestHooks?.platform ?? process.platform
+  if (critical && platform === 'win32') {
+    throw new Error('Critical secure-file durability is unavailable on Windows.')
+  }
   const dir = dirname(targetPath)
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true, mode: 0o700 })
@@ -114,22 +128,37 @@ export function writeSecureFile(
       encoding: 'utf-8',
       mode: 0o600
     })
-    if (options.durable) {
+    if (options.durable || critical) {
+      runCriticalSecureFileTestHook(critical, 'temp-fsync', targetPath)
       fsyncFileSync(tmpFile)
     }
     // Why: writeFileSync mode is a no-op on Windows, so restrict the credential's ACL synchronously before the rename publishes it under inherited ACLs.
     applySecurePathRestriction(tmpFile, false, process.platform, true)
+    runCriticalSecureFileTestHook(critical, 'rename', targetPath)
     renameSync(tmpFile, targetPath)
     // Why: these hold auth credentials, so the published path must stay current-user only; cache only on confirmed success so failures retry.
     if (applySecurePathRestriction(targetPath, false, process.platform, true)) {
       rememberHardenedPath(targetPath, false)
     }
-    if (options.durable) {
+    if (critical) {
+      runCriticalSecureFileTestHook(true, 'parent-dir-fsync', targetPath)
+      fsyncDirectorySync(dir)
+    } else if (options.durable) {
       bestEffortFsyncDirectorySync(dir)
     }
   } catch (error) {
     rmSync(tmpFile, { force: true })
     throw error
+  }
+}
+
+function runCriticalSecureFileTestHook(
+  critical: boolean,
+  stage: CriticalSecureFileStage,
+  targetPath: string
+): void {
+  if (critical) {
+    criticalSecureFileTestHooks?.beforeStage?.(stage, targetPath)
   }
 }
 
@@ -162,6 +191,10 @@ export function bestEffortFsyncDirectorySync(directory: string): void {
     }
     throw error
   }
+}
+
+export function fsyncDirectorySync(directory: string): void {
+  fsyncPathSync(directory, 'r')
 }
 
 export function hardenExistingSecureFile(targetPath: string): void {
@@ -268,6 +301,12 @@ function hardenedPathCacheEntriesMatch(
 
 export function __resetSecureFileWindowsUserSidForTests(): void {
   resetSecureFileWindowsUserSidForTests()
+}
+
+export function __setCriticalSecureFileTestHooksForTests(
+  hooks: CriticalSecureFileTestHooks | null
+): void {
+  criticalSecureFileTestHooks = hooks
 }
 
 export function __resetSecureFileHardenedPathsForTests(

@@ -18,3 +18,13 @@ export function writeDurableSecureJsonFileWithinLimit(
     durable: true
   })
 }
+
+export function writeCriticalSecureJsonFileWithinLimit(
+  targetPath: string,
+  value: unknown,
+  maxBytes: number
+): void {
+  writeSecureFile(targetPath, stringifyJsonWithinByteLimit(value, maxBytes).serialized, {
+    durability: 'critical'
+  })
+}
