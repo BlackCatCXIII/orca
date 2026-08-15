@@ -45,6 +45,11 @@ export function validateDailyUpstreamSyncWorkflow(source) {
   requireValue(jobs.length === 1, 'workflow must contain exactly one job', failures)
   const job = jobs[0] ?? {}
   requireValue(job.permissions === undefined, 'job must not override permissions', failures)
+  requireValue(
+    job['continue-on-error'] === undefined,
+    'job must not neutralize terminal failures',
+    failures
+  )
   const steps = job.steps ?? []
   requireValue(
     steps.filter((step) => step.uses).every((step) => ACTION_PINS.has(step.uses)),
@@ -86,6 +91,11 @@ export function validateDailyUpstreamSyncWorkflow(source) {
   const artifact = steps.find((step) => step.uses?.startsWith('actions/upload-artifact@'))
   requireValue(artifact?.if === 'always()', 'report artifact must upload on failure', failures)
   requireValue(
+    artifact?.['continue-on-error'] === undefined,
+    'report upload failures must remain fatal',
+    failures
+  )
+  requireValue(
     Number.isInteger(artifact?.with?.['retention-days']) && artifact.with['retention-days'] <= 14,
     'report retention must be an integer no greater than 14 days',
     failures
@@ -93,6 +103,21 @@ export function validateDailyUpstreamSyncWorkflow(source) {
   requireValue(
     artifact?.with?.['if-no-files-found'] === 'error',
     'missing reports must fail',
+    failures
+  )
+  const artifactIndex = steps.indexOf(artifact)
+  const terminalGate = steps.at(-1)
+  requireValue(
+    artifactIndex === steps.length - 2,
+    'report upload must be immediately before the terminal failure gate',
+    failures
+  )
+  requireValue(
+    terminalGate?.name === 'Fail after preserving a non-mergeable report' &&
+      terminalGate?.if === "always() && steps.simulation.outcome != 'success'" &&
+      terminalGate?.run === 'exit 1' &&
+      terminalGate?.['continue-on-error'] === undefined,
+    'workflow must end with the exact non-success failure gate',
     failures
   )
   for (const pattern of FORBIDDEN_TEXT) {

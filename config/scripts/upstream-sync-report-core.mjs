@@ -7,14 +7,35 @@ const COMMIT_PATTERN = /^[0-9a-f]{40}$/
 const SCP_LOCATION_PATTERN = /^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[^\s]+$/
 const URL_SCHEMES = new Set(['file:', 'git:', 'http:', 'https:', 'ssh:'])
 const EMPTY_GIT_CONFIG = process.platform === 'win32' ? 'NUL' : '/dev/null'
+const BLOCKED_ENVIRONMENT_KEYS =
+  /^(?:GIT_|GCM_|GH_TOKEN$|GITHUB_TOKEN$|SSH_(?:ASKPASS|ASKPASS_REQUIRE|AUTH_SOCK|AGENT_PID)$)/i
+const ISOLATED_GIT_OPTIONS = [
+  '-c',
+  `core.hooksPath=${EMPTY_GIT_CONFIG}`,
+  '-c',
+  'credential.helper=',
+  '-c',
+  'http.extraHeader='
+]
 
-export function isolatedGitEnvironment(overrides = process.env) {
+export function isolatedGitEnvironment(inherited = process.env) {
+  const environment = {}
+  for (const [key, value] of Object.entries(inherited)) {
+    if (!BLOCKED_ENVIRONMENT_KEYS.test(key) && value !== undefined) {
+      environment[key] = value
+    }
+  }
   return {
-    ...overrides,
+    ...environment,
     GIT_CONFIG_GLOBAL: EMPTY_GIT_CONFIG,
     GIT_CONFIG_NOSYSTEM: '1',
-    GIT_TERMINAL_PROMPT: '0'
+    GIT_TERMINAL_PROMPT: '0',
+    SSH_ASKPASS_REQUIRE: 'never'
   }
+}
+
+export function isolatedGitArguments(args) {
+  return [...ISOLATED_GIT_OPTIONS, ...args]
 }
 
 export class UpstreamSyncError extends Error {
@@ -28,7 +49,7 @@ export class UpstreamSyncError extends Error {
 function runGit(cwd, args, options = {}) {
   try {
     const { env, ...commandOptions } = options
-    return execFileSync('git', args, {
+    return execFileSync('git', isolatedGitArguments(args), {
       cwd,
       encoding: 'utf8',
       env: isolatedGitEnvironment(env),
@@ -43,18 +64,21 @@ function runGit(cwd, args, options = {}) {
 }
 
 function runMerge(cwd, upstreamSha) {
-  return spawnSync('git', ['merge', '--no-commit', '--no-ff', '--no-edit', upstreamSha], {
-    cwd,
-    encoding: 'utf8',
-    env: isolatedGitEnvironment({
-      ...process.env,
-      GIT_AUTHOR_EMAIL: 'upstream-sync@invalid',
-      GIT_AUTHOR_NAME: 'Upstream Sync Simulation',
-      GIT_COMMITTER_EMAIL: 'upstream-sync@invalid',
-      GIT_COMMITTER_NAME: 'Upstream Sync Simulation'
-    }),
-    maxBuffer: 64 * 1024 * 1024
-  })
+  const environment = isolatedGitEnvironment()
+  environment.GIT_AUTHOR_EMAIL = 'upstream-sync@invalid'
+  environment.GIT_AUTHOR_NAME = 'Upstream Sync Simulation'
+  environment.GIT_COMMITTER_EMAIL = 'upstream-sync@invalid'
+  environment.GIT_COMMITTER_NAME = 'Upstream Sync Simulation'
+  return spawnSync(
+    'git',
+    isolatedGitArguments(['merge', '--no-commit', '--no-ff', '--no-edit', upstreamSha]),
+    {
+      cwd,
+      encoding: 'utf8',
+      env: environment,
+      maxBuffer: 64 * 1024 * 1024
+    }
+  )
 }
 
 function assertCleanFullRepository(repo) {
@@ -81,10 +105,13 @@ export function validateGitRef(ref) {
   if (COMMIT_PATTERN.test(ref)) {
     return ref
   }
-  if (!ref.startsWith('refs/heads/') && !ref.startsWith('refs/tags/')) {
-    throw new UpstreamSyncError('malformed-ref', `Ref must be a full branch/tag ref or SHA: ${ref}`)
+  if (!ref.startsWith('refs/heads/')) {
+    throw new UpstreamSyncError('malformed-ref', `Ref must be a full branch ref or SHA: ${ref}`)
   }
-  const result = spawnSync('git', ['check-ref-format', ref], { encoding: 'utf8' })
+  const result = spawnSync('git', isolatedGitArguments(['check-ref-format', ref]), {
+    encoding: 'utf8',
+    env: isolatedGitEnvironment()
+  })
   if (result.status !== 0) {
     throw new UpstreamSyncError('malformed-ref', `Invalid Git ref: ${ref}`)
   }
@@ -145,8 +172,7 @@ function resolveLocationRef(location, ref, cwd) {
 
 function importLocationRef(repository, role, location, ref, expectedSha) {
   const destination = `refs/orca-sync/${role}`
-  const source = COMMIT_PATTERN.test(ref) ? ref : ref
-  runGit(repository, ['fetch', '--no-tags', '--force', location, `${source}:${destination}`])
+  runGit(repository, ['fetch', '--no-tags', '--force', location, `${ref}:${destination}`])
   const importedSha = runGit(repository, ['rev-parse', '--verify', `${destination}^{commit}`])
   if (importedSha !== expectedSha) {
     throw new UpstreamSyncError(
@@ -157,9 +183,54 @@ function importLocationRef(repository, role, location, ref, expectedSha) {
   return importedSha
 }
 
-function changedPaths(repository, range) {
-  const output = runGit(repository, ['diff', '--name-only', '-z', range])
+function unmergedPaths(repository) {
+  const output = runGit(repository, ['diff', '--name-only', '-z', '--diff-filter=U'])
   return output ? output.split('\0').filter(Boolean).sort() : []
+}
+
+function changedPathDetails(repository, range) {
+  const output = runGit(repository, ['diff', '--name-status', '-z', '--find-renames=50%', range])
+  const tokens = output ? output.split('\0').filter(Boolean) : []
+  const paths = new Set()
+  const renames = []
+  for (let index = 0; index < tokens.length; ) {
+    const status = tokens[index]
+    const source = tokens[index + 1]
+    if (!/^[A-Z][0-9]*$/.test(status) || source === undefined) {
+      throw new UpstreamSyncError('git-output-invalid', 'Git emitted malformed name-status output')
+    }
+    paths.add(source)
+    index += 2
+    if (status.startsWith('R') || status.startsWith('C')) {
+      const destination = tokens[index]
+      if (destination === undefined) {
+        throw new UpstreamSyncError('git-output-invalid', 'Git omitted a rename destination')
+      }
+      paths.add(destination)
+      renames.push({ source, destination })
+      index += 1
+    }
+  }
+  return { paths: [...paths].sort(), renames }
+}
+
+function overlappingChangedPaths(downstream, upstream) {
+  const downstreamSet = new Set(downstream.paths)
+  const upstreamSet = new Set(upstream.paths)
+  const overlaps = new Set(downstream.paths.filter((file) => upstreamSet.has(file)))
+  for (const { source, destination } of downstream.renames) {
+    if (upstreamSet.has(source) || upstreamSet.has(destination)) {
+      overlaps.add(source)
+      overlaps.add(destination)
+    }
+  }
+  for (const { source, destination } of upstream.renames) {
+    if (downstreamSet.has(source) || downstreamSet.has(destination)) {
+      overlaps.add(source)
+      overlaps.add(destination)
+    }
+  }
+  return [...overlaps].sort()
 }
 
 function classifyPath(file) {
@@ -201,14 +272,12 @@ function summarizeHotspots(paths) {
 }
 
 function simulateMerge(repository, downstreamSha, upstreamSha) {
-  runGit(repository, ['config', 'core.hooksPath', path.join(repository, '.disabled-hooks')])
-  runGit(repository, ['config', 'commit.gpgSign', 'false'])
   runGit(repository, ['checkout', '--detach', downstreamSha])
   const merge = runMerge(repository, upstreamSha)
   if (merge.status === 0) {
     return { mergeable: true, conflicts: [] }
   }
-  const conflicts = changedPaths(repository, '--diff-filter=U')
+  const conflicts = unmergedPaths(repository)
   if (conflicts.length === 0) {
     const detail = merge.stderr?.trim() || merge.stdout?.trim() || `exit ${merge.status}`
     throw new UpstreamSyncError('merge-simulation-failed', `Disposable merge failed: ${detail}`)
@@ -242,13 +311,13 @@ export function buildUpstreamSyncReport(options, dependencies = {}) {
   const downstreamUrl = validateRepositoryLocation(options.downstreamUrl, repo)
   const upstreamUrl = validateRepositoryLocation(options.upstreamUrl, repo)
   const resolveRef = dependencies.resolveRef ?? resolveLocationRef
-  const downstreamBefore = resolveRef(downstreamUrl, downstreamRef, repo)
-  const upstreamBefore = resolveRef(upstreamUrl, upstreamRef, repo)
-  validateExpectedSha('downstream', options.expectedDownstreamSha, downstreamBefore)
-  validateExpectedSha('upstream', options.expectedUpstreamSha, upstreamBefore)
 
   const { temporaryRoot, repository } = createRepository()
   try {
+    const downstreamBefore = resolveRef(downstreamUrl, downstreamRef, repository)
+    const upstreamBefore = resolveRef(upstreamUrl, upstreamRef, repository)
+    validateExpectedSha('downstream', options.expectedDownstreamSha, downstreamBefore)
+    validateExpectedSha('upstream', options.expectedUpstreamSha, upstreamBefore)
     const downstreamSha = importLocationRef(
       repository,
       'downstream',
@@ -263,19 +332,23 @@ export function buildUpstreamSyncReport(options, dependencies = {}) {
       upstreamRef,
       upstreamBefore
     )
-    const downstreamAfter = resolveRef(downstreamUrl, downstreamRef, repo)
-    const upstreamAfter = resolveRef(upstreamUrl, upstreamRef, repo)
+    const downstreamAfter = resolveRef(downstreamUrl, downstreamRef, repository)
+    const upstreamAfter = resolveRef(upstreamUrl, upstreamRef, repository)
     if (downstreamAfter !== downstreamBefore || upstreamAfter !== upstreamBefore) {
       throw new UpstreamSyncError('moving-ref', 'A source ref moved during the simulation')
     }
     if (runGit(repository, ['rev-parse', '--is-shallow-repository']) !== 'false') {
       throw new UpstreamSyncError('shallow-history', 'Fetched simulation repository is shallow')
     }
-    const mergeBaseResult = spawnSync('git', ['merge-base', downstreamSha, upstreamSha], {
-      cwd: repository,
-      encoding: 'utf8',
-      env: isolatedGitEnvironment()
-    })
+    const mergeBaseResult = spawnSync(
+      'git',
+      isolatedGitArguments(['merge-base', downstreamSha, upstreamSha]),
+      {
+        cwd: repository,
+        encoding: 'utf8',
+        env: isolatedGitEnvironment()
+      }
+    )
     const mergeBase = mergeBaseResult.stdout?.trim()
     if (mergeBaseResult.status !== 0 || !COMMIT_PATTERN.test(mergeBase)) {
       throw new UpstreamSyncError('missing-history', 'No complete downstream/upstream merge base')
@@ -288,10 +361,9 @@ export function buildUpstreamSyncReport(options, dependencies = {}) {
     ])
       .split(/\s+/)
       .map(Number)
-    const downstreamPaths = changedPaths(repository, `${mergeBase}..${downstreamSha}`)
-    const upstreamPaths = changedPaths(repository, `${mergeBase}..${upstreamSha}`)
-    const upstreamSet = new Set(upstreamPaths)
-    const overlappingPaths = downstreamPaths.filter((file) => upstreamSet.has(file))
+    const downstreamChanges = changedPathDetails(repository, `${mergeBase}..${downstreamSha}`)
+    const upstreamChanges = changedPathDetails(repository, `${mergeBase}..${upstreamSha}`)
+    const overlappingPaths = overlappingChangedPaths(downstreamChanges, upstreamChanges)
     const simulation = simulateMerge(repository, downstreamSha, upstreamSha)
     const hotspots = [...new Set([...overlappingPaths, ...simulation.conflicts])].sort()
     return {
@@ -304,13 +376,13 @@ export function buildUpstreamSyncReport(options, dependencies = {}) {
       simulation: {
         method: 'disposable-no-commit-merge',
         callerWorktreeMutated: false,
-        gitConfigIsolation: 'system-and-global-disabled',
+        gitConfigIsolation: 'inherited-controls-and-hooks-disabled',
         mergeable: simulation.mergeable,
         conflicts: simulation.conflicts
       },
       changedPaths: {
-        downstream: downstreamPaths.length,
-        upstream: upstreamPaths.length,
+        downstream: downstreamChanges.paths.length,
+        upstream: upstreamChanges.paths.length,
         overlap: overlappingPaths.length
       },
       hotspots: summarizeHotspots(hotspots)

@@ -72,5 +72,5 @@ jobs:
           retention-days: 14
 
       - name: Fail after preserving a non-mergeable report
-        if: steps.simulation.outcome != 'success'
+        if: always() && steps.simulation.outcome != 'success'
         run: exit 1
