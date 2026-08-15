@@ -12,7 +12,7 @@ Each created runtime persists the exact operator catalog SHA-256. Listing and li
 
 Provisioned-root SSH host-key pins remain on the in-process SSH transport where the negotiated key is verified. A pinned target that requires system OpenSSH fails closed; force-system, proxy/config, security-key, GSSAPI, and reactive system fallbacks cannot bypass the pin.
 
-`schema.json` is the canonical contract and `schema.lock.json` binds its exact bytes. Uniqueness and filesystem rules that JSON Schema cannot express remain mandatory runtime checks.
+`config/contracts/environment-recipes/operator-catalog/v1/schema.json` is the canonical contract and `schema.lock.json` binds its exact bytes. Uniqueness and filesystem rules that JSON Schema cannot express remain mandatory runtime checks.
 
 The candidate artifact workflow and lifecycle envelope contract remain intentionally pinned to runtime source `338bd227c12067ace0661d95f66ae4ecb5223a68`. This support branch integrates lifecycle contract commit `f910c801aac823bb1b0768e79d1b3c865db295ac` without changing those schema bytes; it does not retarget the candidate build.
 

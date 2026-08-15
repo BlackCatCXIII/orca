@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest'
 
 const CONTRACT_ROOT = join(
   process.cwd(),
+  'config',
   'contracts',
   'environment-recipes',
   'operator-catalog',

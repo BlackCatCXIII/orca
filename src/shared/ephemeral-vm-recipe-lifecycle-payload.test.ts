@@ -11,6 +11,7 @@ import {
 
 const CONTRACT_DIRECTORY = join(
   process.cwd(),
+  'config',
   'contracts',
   'environment-recipes',
   'lifecycle',
