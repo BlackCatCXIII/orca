@@ -1,5 +1,6 @@
 import {
   mkdirSync,
+  linkSync,
   mkdtempSync,
   readFileSync,
   renameSync,
@@ -12,6 +13,7 @@ import type * as NodeFs from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type * as BoundedFileReader from './node-bounded-file-reader'
 import type * as SecureFileFilesystem from './secure-file-filesystem'
 
 const filesystemFailure = vi.hoisted(() => ({
@@ -24,8 +26,39 @@ const filesystemFailure = vi.hoisted(() => ({
   swapParentPath: null as string | null,
   swapParentMovedPath: null as string | null,
   swapParentTargetPath: null as string | null,
-  swapParentMode: null as 'directory' | 'symlink' | null
+  swapParentMode: null as 'directory' | 'symlink' | null,
+  finalReadSwapArmed: false,
+  finalReadSwapParentPath: null as string | null,
+  finalReadSwapParentMovedPath: null as string | null,
+  finalReadReplacementParentPath: null as string | null
 }))
+
+vi.mock('./node-bounded-file-reader', async (importOriginal) => {
+  const actual = await importOriginal<typeof BoundedFileReader>()
+  const nodeFs = await vi.importActual<typeof NodeFs>('node:fs')
+  return {
+    ...actual,
+    readNodeFileDescriptorSyncWithinLimit(descriptor: number, maxBytes: number) {
+      if (
+        filesystemFailure.finalReadSwapArmed &&
+        filesystemFailure.finalReadSwapParentPath &&
+        filesystemFailure.finalReadSwapParentMovedPath &&
+        filesystemFailure.finalReadReplacementParentPath
+      ) {
+        nodeFs.renameSync(
+          filesystemFailure.finalReadSwapParentPath,
+          filesystemFailure.finalReadSwapParentMovedPath
+        )
+        nodeFs.renameSync(
+          filesystemFailure.finalReadReplacementParentPath,
+          filesystemFailure.finalReadSwapParentPath
+        )
+        filesystemFailure.finalReadSwapArmed = false
+      }
+      return actual.readNodeFileDescriptorSyncWithinLimit(descriptor, maxBytes)
+    }
+  }
+})
 
 vi.mock('./secure-file-filesystem', async (importOriginal) => {
   const actual = await importOriginal<typeof SecureFileFilesystem>()
@@ -110,6 +143,13 @@ vi.mock('./secure-file-filesystem', async (importOriginal) => {
         filesystemFailure.swapParentMode = null
       }
       actual.fsyncSecureDirectoryDescriptorSync(descriptor)
+      if (
+        filesystemFailure.finalReadSwapParentPath &&
+        filesystemFailure.finalReadSwapParentMovedPath &&
+        filesystemFailure.finalReadReplacementParentPath
+      ) {
+        filesystemFailure.finalReadSwapArmed = true
+      }
     }
   }
 })
@@ -191,6 +231,10 @@ describe('ephemeral VM runtime store', () => {
     filesystemFailure.swapParentMovedPath = null
     filesystemFailure.swapParentTargetPath = null
     filesystemFailure.swapParentMode = null
+    filesystemFailure.finalReadSwapArmed = false
+    filesystemFailure.finalReadSwapParentPath = null
+    filesystemFailure.finalReadSwapParentMovedPath = null
+    filesystemFailure.finalReadReplacementParentPath = null
     if (originalPlatform) {
       Object.defineProperty(process, 'platform', originalPlatform)
     }
@@ -585,6 +629,28 @@ describe('ephemeral VM runtime store', () => {
       )
     }
   )
+
+  posixIt('rejects a same-target parent replacement during the final file reread', () => {
+    const outerPath = makeUserDataPath()
+    const userDataPath = join(outerPath, 'profile')
+    const replacementParentPath = join(outerPath, 'profile-replacement')
+    mkdirSync(userDataPath)
+    mkdirSync(replacementParentPath)
+    const operatorRuntime = runtimeRecord({
+      operatorRecipeCatalogSha256: 'c'.repeat(64),
+      provisionMutation: { requestSha256: 'f'.repeat(64), resolvedRef: 'a'.repeat(40) }
+    })
+    upsertEphemeralVmRuntime(userDataPath, operatorRuntime)
+    const targetPath = getEphemeralVmRuntimeStorePath(userDataPath)
+    linkSync(targetPath, getEphemeralVmRuntimeStorePath(replacementParentPath))
+    filesystemFailure.finalReadSwapParentPath = userDataPath
+    filesystemFailure.finalReadSwapParentMovedPath = join(outerPath, 'profile-observed')
+    filesystemFailure.finalReadReplacementParentPath = replacementParentPath
+
+    expect(() => listAuthoritativeEphemeralVmRuntimes(userDataPath)).toThrow(
+      EphemeralVmRuntimeStoreError
+    )
+  })
 
   posixIt('rejects same-inode byte changes while establishing operator authority', () => {
     const userDataPath = makeUserDataPath()

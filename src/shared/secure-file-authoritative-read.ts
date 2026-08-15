@@ -74,7 +74,12 @@ function withAuthoritativeParentDirectory<T>(targetPath: string, finish: () => T
     const afterFsync = snapshotDescriptor(descriptor)
     assertUnchangedSnapshot(observed, afterFsync)
     assertPathStillObserved(parentPath, observed, true)
-    return finish()
+    const result = finish()
+    const afterFinish = snapshotDescriptor(descriptor)
+    assertDirectory(afterFinish)
+    assertUnchangedSnapshot(observed, afterFinish)
+    assertPathStillObserved(parentPath, observed, true)
+    return result
   } finally {
     closeSync(descriptor)
   }
