@@ -2,7 +2,11 @@ import {
   getEphemeralVmRecipeResultConnection,
   type EphemeralVmRecipeResult
 } from '../shared/ephemeral-vm-recipes'
-import { upsertEphemeralVmRuntime } from '../shared/ephemeral-vm-runtime-store'
+import type { EphemeralVmRuntimeRecord } from '../shared/ephemeral-vm-runtimes'
+import {
+  upsertEphemeralVmRuntime,
+  upsertEphemeralVmRuntimeRollbackRecovery
+} from '../shared/ephemeral-vm-runtime-store'
 import type { ProvisionEphemeralVmRuntimeArgs } from './ephemeral-vm-runtime-service'
 import {
   runEphemeralVmRecipeCleanup,
@@ -17,14 +21,14 @@ type FailedStart = {
 export async function cleanupFailedEphemeralVmStart(
   args: ProvisionEphemeralVmRuntimeArgs,
   start: FailedStart
-): Promise<void> {
+): Promise<boolean> {
   const cleanupError = await getCleanupError(args, start)
   if (cleanupError === null && !args.provisionMutation) {
-    return
+    return true
   }
   const now = args.now ?? Date.now()
   const connection = getEphemeralVmRecipeResultConnection(start.recipeResult)
-  upsertEphemeralVmRuntime(args.userDataPath, {
+  const recovery: EphemeralVmRuntimeRecord = {
     id: start.context.instanceId ?? start.context.recipeId,
     recipeId: args.recipe.id,
     recipe: args.recipe,
@@ -46,7 +50,17 @@ export async function cleanupFailedEphemeralVmStart(
     createdAt: now,
     updatedAt: now,
     recipeResult: start.recipeResult
-  })
+  }
+  try {
+    upsertEphemeralVmRuntime(args.userDataPath, recovery)
+  } catch (error) {
+    if (!args.recipe.checkoutMode) {
+      throw error
+    }
+    // Why: cleanup retry metadata must survive even when its feature companion is unreadable.
+    upsertEphemeralVmRuntimeRollbackRecovery(args.userDataPath, recovery)
+  }
+  return false
 }
 
 async function getCleanupError(

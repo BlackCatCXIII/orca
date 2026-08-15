@@ -5,6 +5,7 @@ export type ProvisionedRootCreateOptions = {
   sourceRepoId: string
   executionHostId: NonNullable<WorktreeCreationRequest['workspaceRunContext']>['hostId']
   expectedPath: string
+  expectedRefHead?: string
 }
 
 export function getProvisionedRootCreateOptions(
@@ -13,13 +14,21 @@ export function getProvisionedRootCreateOptions(
   if (request.ephemeralVmCheckoutMode !== 'provisioned-root') {
     return null
   }
-  if (!request.ephemeralVmRuntimeId || !request.workspaceRunContext || !request.ephemeralVmRecipe) {
+  if (
+    !request.ephemeralVmRuntimeId ||
+    !request.workspaceRunContext ||
+    !request.ephemeralVmRecipe ||
+    (request.baseBranch && !request.ephemeralVmExpectedRefHead)
+  ) {
     throw new Error('Provisioned-root workspace identity is incomplete.')
   }
   return {
     runtimeId: request.ephemeralVmRuntimeId,
     sourceRepoId: request.ephemeralVmRecipe.sourceRepoId,
     executionHostId: request.workspaceRunContext.hostId,
-    expectedPath: request.workspaceRunContext.path
+    expectedPath: request.workspaceRunContext.path,
+    ...(request.ephemeralVmExpectedRefHead
+      ? { expectedRefHead: request.ephemeralVmExpectedRefHead }
+      : {})
   }
 }

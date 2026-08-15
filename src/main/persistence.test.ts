@@ -4854,7 +4854,94 @@ describe('Store', () => {
     expect(updated!.externalWorktreeVisibilityLegacy).toBe(true)
   })
 
-  it('keeps rollback agent visibility writes authoritative for both built-in sources', async () => {
+  it('migrates implicit legacy visibility to an explicit override before defaulting global hide', async () => {
+    const persisted = getDefaultPersistedState(testState.dir)
+    delete persisted.settings.worktreeVisibilityDefaults
+    persisted.repos = [
+      makeRepo({
+        id: 'legacy',
+        kind: 'git',
+        externalWorktreeVisibility: undefined,
+        externalWorktreeVisibilityLegacy: undefined
+      }),
+      makeRepo({ id: 'explicit', externalWorktreeVisibility: 'hide' }),
+      makeRepo({
+        id: 'inherited',
+        externalWorktreeVisibility: undefined,
+        externalWorktreeVisibilityLegacy: false
+      })
+    ]
+    writeDataFile(persisted)
+
+    const store = await createStore()
+
+    expect(store.getSettings().worktreeVisibilityDefaults).toEqual({ external: 'hide' })
+    expect(store.getRepo('legacy')).toMatchObject({
+      externalWorktreeVisibility: 'show',
+      externalWorktreeVisibilityLegacy: true
+    })
+    expect(store.getRepo('explicit')?.externalWorktreeVisibility).toBe('hide')
+    expect(store.getRepo('inherited')?.externalWorktreeVisibility).toBeUndefined()
+
+    store.flush()
+    const reloaded = await createStore()
+    expect(reloaded.getRepo('legacy')).toMatchObject({
+      externalWorktreeVisibility: 'show',
+      externalWorktreeVisibilityLegacy: true
+    })
+    expect(reloaded.getRepo('inherited')?.externalWorktreeVisibility).toBeUndefined()
+  })
+
+  it('merges visibility-default patches so future source defaults survive older controls', async () => {
+    const store = await createStore()
+    store.updateSettings({
+      worktreeVisibilityDefaults: {
+        external: 'show',
+        futureSource: 'hide'
+      } as GlobalSettings['worktreeVisibilityDefaults']
+    })
+
+    store.updateSettings({ worktreeVisibilityDefaults: { external: 'hide' } })
+
+    expect(store.getSettings().worktreeVisibilityDefaults).toEqual({
+      external: 'hide',
+      futureSource: 'hide'
+    })
+  })
+
+  it('normalizes and persists global worktree source defaults', async () => {
+    const store = await createStore()
+
+    store.updateSettings({
+      worktreeVisibilityDefaults: {
+        external: 'show',
+        customSources: [
+          { id: 'team', rootPath: ' /srv/team-worktrees ' },
+          { id: 'invalid', rootPath: '../relative' }
+        ],
+        sourcePreferences: {
+          builtIn: { claude: 'show', gsd: 'hide' },
+          custom: { team: 'show' }
+        }
+      }
+    })
+
+    expect(store.getSettings().worktreeVisibilityDefaults).toEqual({
+      external: 'show',
+      customSources: [{ id: 'team', rootPath: '/srv/team-worktrees' }],
+      sourcePreferences: {
+        builtIn: { claude: 'show', gsd: 'hide' },
+        custom: { team: 'show' }
+      }
+    })
+    store.flush()
+    const reloaded = await createStore()
+    expect(reloaded.getSettings().worktreeVisibilityDefaults).toEqual(
+      store.getSettings().worktreeVisibilityDefaults
+    )
+  })
+
+  it('persists agent worktree visibility independently from external visibility', async () => {
     const store = await createStore()
     store.addRepo(makeRepo({ externalWorktreeVisibility: 'hide' }))
 
@@ -4907,6 +4994,25 @@ describe('Store', () => {
     expect(reloaded.getRepo('r1')?.customWorktreeVisibilitySources).toEqual([
       { id: 'team', rootPath: '/srv/team-worktrees' }
     ])
+  })
+
+  it('clears an explicit external-worktree override without stamping an inherited default', async () => {
+    const store = await createStore()
+    store.addRepo(
+      makeRepo({
+        externalWorktreeVisibility: 'show',
+        externalWorktreeVisibilityLegacy: true
+      })
+    )
+
+    const updated = store.updateRepo('r1', { externalWorktreeVisibility: null })
+
+    expect(updated?.externalWorktreeVisibility).toBeUndefined()
+    expect(updated?.externalWorktreeVisibilityLegacy).toBe(false)
+    store.flush()
+    const reloaded = await createStore()
+    expect(reloaded.getRepo('r1')?.externalWorktreeVisibility).toBeUndefined()
+    expect(reloaded.getRepo('r1')?.externalWorktreeVisibilityLegacy).toBe(false)
   })
 
   it('updateRepo clears source-control AI overrides independently from other clearable fields', async () => {

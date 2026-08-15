@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto'
 import type { Store } from './persistence'
 import type { Repo } from '../shared/repo-types'
 import type {
@@ -20,18 +19,15 @@ import {
 } from '../shared/ephemeral-vm-recipes'
 import { listEphemeralVmRuntimes } from '../shared/ephemeral-vm-runtime-store'
 import type { EphemeralVmRuntimeRecord } from '../shared/ephemeral-vm-runtimes'
-import {
-  getProjectHostSetupForRepo,
-  getProjectHostSetupWorktreeMeta
-} from '../shared/project-host-setup-projection'
-import { isTuiAgent } from '../shared/tui-agent-config'
+import { getProjectHostSetupForRepo } from '../shared/project-host-setup-projection'
 import { getSshGitProvider } from './providers/ssh-git-dispatch'
 import {
   getSshProviderAuthority,
   isCurrentSshProviderAuthority
 } from './ssh/ssh-provider-authority'
 import { attachRunningEphemeralVmRuntimeToWorkspace } from './ephemeral-vm-runtime-attachment'
-import { getWorktreeCreationLayout, mergeWorktree } from './ipc/worktree-logic'
+import { mergeWorktree } from './ipc/worktree-logic'
+import { buildProvisionedRootMeta } from './provisioned-root-worktree-meta'
 
 export type ProvisionedRootAdoptionStore = Pick<
   Store,
@@ -120,6 +116,16 @@ export async function adoptProvisionedRootSshCheckout(args: {
   }
   if (gitWorktree.isSparse || sparseCheckoutEnabled) {
     throw new Error('Provisioned-root recipes cannot adopt a sparse checkout.')
+  }
+  const requestedBranch = request.branchNameOverride ?? request.name
+  if (gitWorktree.branch !== `refs/heads/${requestedBranch}`) {
+    throw new Error("The recipe projectRoot is not checked out on Orca's requested branch.")
+  }
+  if (request.baseBranch && !request.expectedRefHead) {
+    throw new Error('The requested provisioned-root ref identity is missing.')
+  }
+  if (request.expectedRefHead && gitWorktree.head !== request.expectedRefHead) {
+    throw new Error("The recipe projectRoot was not created from Orca's requested ref.")
   }
 
   const worktreeId = `${repo.id}::${gitWorktree.path}`
@@ -256,57 +262,4 @@ function requireOwnedProvisionedRootRuntime(
 
 function pathsEqual(left: string, right: string): boolean {
   return normalizeRuntimePathForComparison(left) === normalizeRuntimePathForComparison(right)
-}
-
-function buildProvisionedRootMeta(
-  store: ProvisionedRootAdoptionStore,
-  repo: Repo,
-  args: AdoptionArgs,
-  now: number,
-  existing?: WorktreeMeta
-): Partial<WorktreeMeta> {
-  return {
-    instanceId: existing?.instanceId ?? randomUUID(),
-    ...getProjectHostSetupWorktreeMeta(store.getProjectHostSetups(), repo),
-    hostId: args.executionHostId,
-    ephemeralVmCheckoutMode: 'provisioned-root',
-    displayName: args.displayName || args.name,
-    lastActivityAt: existing?.lastActivityAt ?? now,
-    createdAt: existing?.createdAt ?? now,
-    orcaCreatedAt: existing?.orcaCreatedAt ?? now,
-    orcaCreationSource: 'ssh',
-    creatorProvenance: { kind: 'host' },
-    orcaCreationWorkspaceLayout: getWorktreeCreationLayout(repo, store.getSettings()),
-    ...(args.automationProvenance ? { automationProvenance: args.automationProvenance } : {}),
-    ...(args.compareBaseRef || args.baseBranch
-      ? { baseRef: args.compareBaseRef ?? args.baseBranch }
-      : {}),
-    ...(args.pushTarget ? { pushTarget: args.pushTarget } : {}),
-    ...(isTuiAgent(args.createdWithAgent) ? { createdWithAgent: args.createdWithAgent } : {}),
-    ...(args.pendingFirstAgentMessageRename === true && isTuiAgent(args.createdWithAgent)
-      ? { pendingFirstAgentMessageRename: true }
-      : {}),
-    ...(args.linkedIssue !== undefined ? { linkedIssue: args.linkedIssue } : {}),
-    ...(args.linkedPR !== undefined ? { linkedPR: args.linkedPR } : {}),
-    ...(args.linkedLinearIssue !== undefined ? { linkedLinearIssue: args.linkedLinearIssue } : {}),
-    ...(args.linkedLinearIssueWorkspaceId !== undefined
-      ? { linkedLinearIssueWorkspaceId: args.linkedLinearIssueWorkspaceId }
-      : {}),
-    ...(args.linkedLinearIssueOrganizationUrlKey !== undefined
-      ? { linkedLinearIssueOrganizationUrlKey: args.linkedLinearIssueOrganizationUrlKey }
-      : {}),
-    ...(args.manualOrder !== undefined ? { manualOrder: args.manualOrder } : {}),
-    ...(args.workspaceStatus !== undefined ? { workspaceStatus: args.workspaceStatus } : {}),
-    ...(args.linkedGitLabIssue !== undefined ? { linkedGitLabIssue: args.linkedGitLabIssue } : {}),
-    ...(args.linkedGitLabMR !== undefined ? { linkedGitLabMR: args.linkedGitLabMR } : {}),
-    ...(args.linkedBitbucketPR !== undefined ? { linkedBitbucketPR: args.linkedBitbucketPR } : {}),
-    ...(args.linkedAzureDevOpsPR !== undefined
-      ? { linkedAzureDevOpsPR: args.linkedAzureDevOpsPR }
-      : {}),
-    ...(args.linkedGiteaPR !== undefined ? { linkedGiteaPR: args.linkedGiteaPR } : {}),
-    ...(args.linkedWorkItem !== undefined ? { linkedWorkItem: args.linkedWorkItem } : {}),
-    ...(args.linkedTaskSourceContext !== undefined
-      ? { linkedTaskSourceContext: args.linkedTaskSourceContext }
-      : {})
-  }
 }

@@ -13,9 +13,15 @@ import {
   type EphemeralVmRecipeStartSuccess
 } from './ephemeral-vm-recipe-runner'
 import { cleanupFailedEphemeralVmStart } from './ephemeral-vm-failed-start-cleanup'
-import { provisionedRootChangedDuringResume } from './ephemeral-vm-resume-integrity'
 import { ephemeralVmRecipeContextFromRuntime } from './ephemeral-vm-runtime-context'
-import { recordProvisionedEphemeralVmRuntime } from './ephemeral-vm-runtime-recording'
+import {
+  persistProvisionedEphemeralVmRuntime,
+  prepareEphemeralVmCompatibilityPersistence
+} from './ephemeral-vm-runtime-provisioning-persistence'
+import { getProvisionedRootResumeIntegrityError } from './ephemeral-vm-resume-integrity'
+import { runControlledEphemeralVmRuntimeCleanup } from './ephemeral-vm-runtime-cleanup-control'
+
+export { stopEphemeralVmRuntimeCleanup } from './ephemeral-vm-runtime-cleanup-control'
 
 export type ProvisionEphemeralVmRuntimeArgs = {
   userDataPath: string
@@ -29,6 +35,7 @@ export type ProvisionEphemeralVmRuntimeArgs = {
   repoUrl?: string
   branch?: string
   ref?: string
+  expectedRefHead?: string
   orcaVersion?: string
   now?: number
   signal?: AbortSignal
@@ -100,11 +107,10 @@ export type ResumeEphemeralVmRuntimeResult =
       error: string
     }
 
-const cleanupInFlight = new Map<string, Promise<CleanupEphemeralVmRuntimeResult>>()
-
 export async function provisionEphemeralVmRuntime(
   args: ProvisionEphemeralVmRuntimeArgs
 ): Promise<ProvisionEphemeralVmRuntimeResult> {
+  const compatibility = prepareEphemeralVmCompatibilityPersistence(args)
   const start = await runEphemeralVmRecipeStart({
     repoPath: args.repoPath,
     recipe: args.recipe,
@@ -117,7 +123,9 @@ export async function provisionEphemeralVmRuntime(
       repoUrl: args.repoUrl,
       branch: args.branch,
       ref: args.ref,
-      orcaVersion: args.orcaVersion
+      expectedRefHead: args.expectedRefHead,
+      orcaVersion: args.orcaVersion,
+      ...(compatibility ? { instanceId: compatibility.instanceId } : {})
     },
     signal: args.signal,
     onStdout: args.onStdout,
@@ -134,8 +142,7 @@ export async function provisionEphemeralVmRuntime(
     return { ok: false, start }
   }
 
-  const now = args.now ?? Date.now()
-  const runtime = await recordProvisionedEphemeralVmRuntime(args, start, now)
+  const runtime = await persistProvisionedEphemeralVmRuntime(args, start, compatibility)
 
   return { ok: true, start, runtime }
 }
@@ -143,21 +150,12 @@ export async function provisionEphemeralVmRuntime(
 export function cleanupEphemeralVmRuntime(
   args: CleanupEphemeralVmRuntimeArgs
 ): Promise<CleanupEphemeralVmRuntimeResult> {
-  const key = `${args.userDataPath}\0${args.runtimeId}`
-  const existing = cleanupInFlight.get(key)
-  if (existing) {
-    return existing
-  }
-
-  const cleanup = cleanupEphemeralVmRuntimeOnce(args)
-  cleanupInFlight.set(key, cleanup)
-  const forget = (): void => {
-    if (cleanupInFlight.get(key) === cleanup) {
-      cleanupInFlight.delete(key)
-    }
-  }
-  void cleanup.then(forget, forget)
-  return cleanup
+  return runControlledEphemeralVmRuntimeCleanup({
+    userDataPath: args.userDataPath,
+    runtimeId: args.runtimeId,
+    signal: args.signal,
+    run: (signal) => cleanupEphemeralVmRuntimeOnce({ ...args, signal })
+  })
 }
 
 async function cleanupEphemeralVmRuntimeOnce(
@@ -281,13 +279,15 @@ export async function resumeEphemeralVmRuntime(
     return { ok: false, runtime: failed, error: resume.error }
   }
 
-  if (!resume.skipped && provisionedRootChangedDuringResume(existing.recipeResult, resume.result)) {
-    const error = 'The provisioned workspace root changed while the runtime was suspended.'
+  const resumeIntegrityError = resume.skipped
+    ? null
+    : getProvisionedRootResumeIntegrityError(existing.recipeResult, resume.result)
+  if (resumeIntegrityError) {
     const failed = updateEphemeralVmRuntimeStatus(args.userDataPath, existing.id, {
       status: 'resume_failed',
       updatedAt: Date.now()
     })
-    return { ok: false, runtime: failed, error }
+    return { ok: false, runtime: failed, error: resumeIntegrityError }
   }
 
   const runtime = updateEphemeralVmRuntimeStatus(args.userDataPath, existing.id, {

@@ -46,6 +46,7 @@ async function provenanceFixture() {
   return { artifactDirectory, policyPath, root, sourceRoot }
 }
 
+/** @type {Array<[string, (policy: any) => void]>} */
 const policyMutations = [
   ['unknown policy field', (policy) => (policy.unknown = true)],
   ['missing platform', (policy) => delete policy.platforms['mobile-android']],

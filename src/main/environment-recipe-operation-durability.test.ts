@@ -25,6 +25,7 @@ import {
   getEphemeralVmRuntimeStorePath,
   upsertEphemeralVmRuntime
 } from '../shared/ephemeral-vm-runtime-store'
+import { getEphemeralVmRuntimeFeatureStorePath } from '../shared/ephemeral-vm-runtime-feature-store'
 import type { EphemeralVmRuntimeStatus } from '../shared/ephemeral-vm-runtimes'
 import type { EnvironmentRecipeRuntime } from '../shared/environment-recipe-runtime-rpc'
 import {
@@ -122,6 +123,10 @@ function expectDurableWriteOrder(userDataPath: string): void {
     { targetPath: getEnvironmentRecipeOperationJournalPath(userDataPath), durable: true },
     {
       targetPath: getEphemeralVmRuntimeStorePath(userDataPath),
+      durable: true
+    },
+    {
+      targetPath: getEphemeralVmRuntimeFeatureStorePath(userDataPath),
       durable: true
     },
     { targetPath: getEnvironmentRecipeOperationJournalPath(userDataPath), durable: true },

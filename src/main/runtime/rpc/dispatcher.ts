@@ -10,12 +10,12 @@ import {
 } from './core'
 
 import type { FeatureInteractionId } from '../../../shared/feature-interactions'
+import { isOrchestrationMutation } from '../../../shared/orchestration-rpc-contract'
 import { errorResponse, successResponse } from './errors'
 import { ALL_RPC_METHODS } from './methods'
 import { emulatorProbe, emulatorProbeError } from '../../emulator/emulator-probe'
 import type { OrcaRuntimeService } from '../orca-runtime'
 import {
-  authenticatedCallerFingerprint,
   getOrchestrationMutationExecutor,
   type OrchestrationMutationExecutor,
   type DurableMutationInvocation
@@ -25,20 +25,15 @@ import { recordRuntimeFeatureInteraction } from './runtime-feature-interaction'
 import { OrchestrationLegacyCompatibility } from './orchestration-legacy-compatibility'
 import type { RpcDispatchStreamingOptions } from './dispatcher-stream-options'
 import { invalidArgumentResponse, mapDispatcherError } from './dispatcher-error-response'
-import type { OperatorEnvironmentRecipeCatalog } from '../../operator-environment-recipe-catalog'
+import { dispatcherMethodContext, type DispatcherOptions } from './dispatcher-method-context'
 
-export type DispatcherOptions = {
-  runtime: OrcaRuntimeService
-  methods?: readonly RpcAnyMethod[]
-  userDataPath?: string
-  operatorRecipeCatalog?: OperatorEnvironmentRecipeCatalog
-}
+export type { DispatcherOptions } from './dispatcher-method-context'
 
 export class RpcDispatcher {
   private readonly runtime: OrcaRuntimeService
   private readonly registry: RpcRegistry
   private readonly userDataPath: string | undefined
-  private readonly operatorRecipeCatalog: OperatorEnvironmentRecipeCatalog | undefined
+  private readonly operatorRecipeCatalog: DispatcherOptions['operatorRecipeCatalog']
   private readonly orchestrationMutations: OrchestrationMutationExecutor
   private readonly legacyOrchestration: OrchestrationLegacyCompatibility
 
@@ -56,7 +51,10 @@ export class RpcDispatcher {
     this.legacyOrchestration = new OrchestrationLegacyCompatibility(runtime)
   }
 
-  async dispatch(request: RpcRequest, options?: { signal?: AbortSignal }): Promise<RpcResponse> {
+  async dispatch(
+    request: RpcRequest,
+    options?: { signal?: AbortSignal; authenticatedCallerFingerprint?: string }
+  ): Promise<RpcResponse> {
     const meta = this.meta()
     const method = this.registry.get(request.method)
     if (!method) {
@@ -104,32 +102,32 @@ export class RpcDispatcher {
         request,
         compatibility.legacyCoordinatorAuthority
       )
+      const authenticatedCallerFingerprint =
+        options?.authenticatedCallerFingerprint ??
+        (needsLocalCallerFingerprint(request, effectiveParams)
+          ? this.orchestrationMutations.getLocalAuthenticatedCallerFingerprint()
+          : undefined)
       const invoke = (mutation?: DurableMutationInvocation) => {
-        const legacyCoordinatorRunId = legacyCoordinator?.revalidate()
-        return method.handler(effectiveParams, {
-          runtime: this.runtime,
-          operatorRecipeCatalog: this.operatorRecipeCatalog,
-          userDataPath: this.userDataPath,
-          signal: options?.signal,
-          requestId: request.id,
-          orchestrationCapability: request.orchestrationCapability,
-          authenticatedCallerFingerprint:
-            mutation?.identity.callerFingerprint ?? authenticatedCallerFingerprint(request),
-          recordMutationReceipt: mutation?.recordReceipt,
-          orchestrationMutation: mutation?.identity,
-          legacyCoordinatorRunId,
-          legacyCoordinatorAuthority: legacyCoordinator?.authority,
-          revalidateLegacyCoordinator: legacyCoordinator?.revalidate,
-          orchestrationCompatibilityCallerAuthority:
-            compatibility.orchestrationCompatibilityCallerAuthority,
-          orchestrationCompatibilityEvidence: request.orchestrationCompatibilityEvidence
-        })
+        return method.handler(
+          effectiveParams,
+          dispatcherMethodContext({
+            runtime: this.runtime,
+            operatorRecipeCatalog: this.operatorRecipeCatalog,
+            userDataPath: this.userDataPath,
+            request,
+            options,
+            mutation,
+            authenticatedCallerFingerprint,
+            legacyCoordinator,
+            compatibilityCallerAuthority: compatibility.orchestrationCompatibilityCallerAuthority
+          })
+        )
       }
       const result = await this.orchestrationMutations.run(
         request,
         effectiveParams,
         invoke,
-        legacyCoordinator?.mutationCallerFingerprint
+        legacyCoordinator?.mutationCallerFingerprint ?? authenticatedCallerFingerprint
       )
       recordRuntimeFeatureInteraction(
         this.runtime,
@@ -194,40 +192,32 @@ export class RpcDispatcher {
           request,
           compatibility.legacyCoordinatorAuthority
         )
+        const authenticatedCallerFingerprint =
+          options?.authenticatedCallerFingerprint ??
+          (needsLocalCallerFingerprint(request, effectiveParams)
+            ? this.orchestrationMutations.getLocalAuthenticatedCallerFingerprint()
+            : undefined)
         const invoke = (mutation?: DurableMutationInvocation) => {
-          const legacyCoordinatorRunId = legacyCoordinator?.revalidate()
-          return method.handler(effectiveParams, {
-            runtime: this.runtime,
-            operatorRecipeCatalog: this.operatorRecipeCatalog,
-            userDataPath: this.userDataPath,
-            signal: options?.signal,
-            requestId: request.id,
-            connectionId: options?.connectionId,
-            clientId: options?.clientId,
-            pairedDeviceId: options?.pairedDeviceId,
-            clientKind: options?.clientKind,
-            clientCapabilities: options?.clientCapabilities,
-            orchestrationCapability: request.orchestrationCapability,
-            authenticatedCallerFingerprint:
-              mutation?.identity.callerFingerprint ?? authenticatedCallerFingerprint(request),
-            recordMutationReceipt: mutation?.recordReceipt,
-            orchestrationMutation: mutation?.identity,
-            pairing: options?.pairing,
-            sendBinary: options?.sendBinary,
-            registerBinaryStreamHandler: options?.registerBinaryStreamHandler,
-            legacyCoordinatorRunId,
-            legacyCoordinatorAuthority: legacyCoordinator?.authority,
-            revalidateLegacyCoordinator: legacyCoordinator?.revalidate,
-            orchestrationCompatibilityCallerAuthority:
-              compatibility.orchestrationCompatibilityCallerAuthority,
-            orchestrationCompatibilityEvidence: request.orchestrationCompatibilityEvidence
-          })
+          return method.handler(
+            effectiveParams,
+            dispatcherMethodContext({
+              runtime: this.runtime,
+              operatorRecipeCatalog: this.operatorRecipeCatalog,
+              userDataPath: this.userDataPath,
+              request,
+              options,
+              mutation,
+              authenticatedCallerFingerprint,
+              legacyCoordinator,
+              compatibilityCallerAuthority: compatibility.orchestrationCompatibilityCallerAuthority
+            })
+          )
         }
         const result = await this.orchestrationMutations.run(
           request,
           effectiveParams,
           invoke,
-          legacyCoordinator?.mutationCallerFingerprint
+          legacyCoordinator?.mutationCallerFingerprint ?? authenticatedCallerFingerprint
         )
         recordRuntimeFeatureInteraction(
           this.runtime,
@@ -311,4 +301,11 @@ export class RpcDispatcher {
   private meta(): RpcEnvelopeMeta {
     return { runtimeId: this.runtime.getRuntimeId() }
   }
+}
+
+function needsLocalCallerFingerprint(request: RpcRequest, params: unknown): boolean {
+  return (
+    request.method.startsWith('orchestration.federation') ||
+    (!!request.orchestrationRequestId && isOrchestrationMutation(request.method, params))
+  )
 }

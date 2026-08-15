@@ -1257,16 +1257,31 @@ export function useIpcEvents(): void {
         if (!store.settings) {
           return
         }
+        const { worktreeVisibilityDefaults, ...activeOwnerUpdates } = updates
+        const settingsUpdates = store.settings.activeRuntimeEnvironmentId
+          ? activeOwnerUpdates
+          : updates
         useAppStore.setState({
           settings: {
             ...store.settings,
-            ...updates,
+            ...settingsUpdates,
             notifications: {
               ...store.settings.notifications,
               ...updates.notifications
             }
-          }
+          },
+          ...(worktreeVisibilityDefaults
+            ? {
+                worktreeVisibilityDefaultsByHost: {
+                  ...store.worktreeVisibilityDefaultsByHost,
+                  local: worktreeVisibilityDefaults
+                }
+              }
+            : {})
         })
+        if ('worktreeVisibilityDefaults' in updates) {
+          void store.fetchAllWorktrees({ visibilityOwnerHostId: 'local' })
+        }
       })
     )
 
