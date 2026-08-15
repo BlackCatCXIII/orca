@@ -186,7 +186,6 @@ function readEphemeralVmRuntimeStore(
     return { version: 1, runtimes: [] }
   }
   try {
-    hardenExistingSecureFile(path)
     if (authoritativeOperatorRead) {
       return readConditionallyAuthoritativeSecureFileSync(
         path,
@@ -200,6 +199,7 @@ function readEphemeralVmRuntimeStore(
         }
       )
     }
+    hardenExistingSecureFile(path)
     return parseEphemeralVmRuntimeStore(
       readNodeFileSyncWithinLimit(path, MAX_EPHEMERAL_VM_RUNTIME_STORE_FILE_BYTES).buffer
     )

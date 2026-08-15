@@ -1,7 +1,18 @@
-import { closeSync, fstatSync, openSync, statSync, type BigIntStats } from 'node:fs'
-import { dirname } from 'node:path'
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  realpathSync,
+  type BigIntStats
+} from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 import { readNodeFileDescriptorSyncWithinLimit } from './node-bounded-file-reader'
-import { fsyncSecureFileDescriptorSync, fsyncSecurePathSync } from './secure-file-filesystem'
+import {
+  fsyncSecureDirectoryDescriptorSync,
+  fsyncSecureFileDescriptorSync
+} from './secure-file-filesystem'
 
 type ConditionalAuthority<T> = {
   value: T
@@ -13,9 +24,16 @@ export function readConditionallyAuthoritativeSecureFileSync<T>(
   maxBytes: number,
   decode: (buffer: Buffer) => ConditionalAuthority<T>
 ): T {
-  const descriptor = openSync(targetPath, 'r')
+  // Why: profile roots may be aliases; canonicalize only the parent so the store entry itself stays no-follow.
+  const canonicalTargetPath = join(realpathSync(dirname(targetPath)), basename(targetPath))
+  const beforeOpen = snapshotPath(canonicalTargetPath)
+  assertRegularFile(beforeOpen)
+  const descriptor = openSync(canonicalTargetPath, noFollowOpenFlags(false))
   try {
     const beforeRead = snapshotDescriptor(descriptor)
+    assertRegularFile(beforeRead)
+    assertUnchangedSnapshot(beforeOpen, beforeRead)
+    assertPathStillObserved(canonicalTargetPath, beforeRead, false)
     const observed = readNodeFileDescriptorSyncWithinLimit(descriptor, maxBytes).buffer
     const afterRead = snapshotDescriptor(descriptor)
     assertUnchangedSnapshot(beforeRead, afterRead)
@@ -31,11 +49,32 @@ export function readConditionallyAuthoritativeSecureFileSync<T>(
 
     fsyncSecureFileDescriptorSync(descriptor)
     assertDescriptorStillObserved(descriptor, maxBytes, afterRead, observed)
-    assertPathStillObserved(targetPath, afterRead)
-    fsyncSecurePathSync(dirname(targetPath), 'r')
-    assertDescriptorStillObserved(descriptor, maxBytes, afterRead, observed)
-    assertPathStillObserved(targetPath, afterRead)
-    return decoded.value
+    assertPathStillObserved(canonicalTargetPath, afterRead, false)
+    return withAuthoritativeParentDirectory(canonicalTargetPath, () => {
+      assertDescriptorStillObserved(descriptor, maxBytes, afterRead, observed)
+      assertPathStillObserved(canonicalTargetPath, afterRead, false)
+      return decoded.value
+    })
+  } finally {
+    closeSync(descriptor)
+  }
+}
+
+function withAuthoritativeParentDirectory<T>(targetPath: string, finish: () => T): T {
+  const parentPath = dirname(targetPath)
+  const beforeOpen = snapshotPath(parentPath)
+  assertDirectory(beforeOpen)
+  const descriptor = openSync(parentPath, noFollowOpenFlags(true))
+  try {
+    const observed = snapshotDescriptor(descriptor)
+    assertDirectory(observed)
+    assertUnchangedSnapshot(beforeOpen, observed)
+    assertPathStillObserved(parentPath, observed, true)
+    fsyncSecureDirectoryDescriptorSync(descriptor)
+    const afterFsync = snapshotDescriptor(descriptor)
+    assertUnchangedSnapshot(observed, afterFsync)
+    assertPathStillObserved(parentPath, observed, true)
+    return finish()
   } finally {
     closeSync(descriptor)
   }
@@ -56,13 +95,54 @@ function assertDescriptorStillObserved(
   }
 }
 
-function assertPathStillObserved(targetPath: string, observed: BigIntStats): void {
-  const current = statSync(targetPath, { bigint: true })
+function assertPathStillObserved(
+  targetPath: string,
+  observed: BigIntStats,
+  directory: boolean
+): void {
+  const current = snapshotPath(targetPath)
+  if (directory) {
+    assertDirectory(current)
+  } else {
+    assertRegularFile(current)
+  }
   assertUnchangedSnapshot(observed, current)
 }
 
 function snapshotDescriptor(descriptor: number): BigIntStats {
   return fstatSync(descriptor, { bigint: true })
+}
+
+function snapshotPath(targetPath: string): BigIntStats {
+  const stats = lstatSync(targetPath, { bigint: true })
+  if (stats.isSymbolicLink()) {
+    throw new Error('Secure file authority does not follow symbolic links.')
+  }
+  return stats
+}
+
+function noFollowOpenFlags(directory: boolean): number | 'r' {
+  if (process.platform === 'win32') {
+    return 'r'
+  }
+  return (
+    constants.O_RDONLY |
+    constants.O_NONBLOCK |
+    constants.O_NOFOLLOW |
+    (directory ? constants.O_DIRECTORY : 0)
+  )
+}
+
+function assertRegularFile(stats: BigIntStats): void {
+  if (!stats.isFile()) {
+    throw new Error('Secure file authority requires a regular file.')
+  }
+}
+
+function assertDirectory(stats: BigIntStats): void {
+  if (!stats.isDirectory()) {
+    throw new Error('Secure file authority requires a parent directory.')
+  }
 }
 
 function assertSnapshotSize(stats: BigIntStats, bytes: Buffer): void {
