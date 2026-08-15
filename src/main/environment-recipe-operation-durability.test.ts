@@ -1,8 +1,48 @@
 import { mkdtempSync, rmSync } from 'node:fs'
+import type * as NodeFs from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type * as SecureFileModule from '../shared/secure-file'
+import type * as SecureFileFilesystem from '../shared/secure-file-filesystem'
+
+type CriticalSecureFileStage = 'temp-fsync' | 'rename' | 'parent-dir-fsync'
+
+const filesystemFailure = vi.hoisted(() => ({
+  stage: null as CriticalSecureFileStage | null,
+  targetPath: null as string | null,
+  lastRenamedTargetPath: null as string | null
+}))
+
+vi.mock('../shared/secure-file-filesystem', async (importOriginal) => {
+  const actual = await importOriginal<typeof SecureFileFilesystem>()
+  const nodeFs = await vi.importActual<typeof NodeFs>('node:fs')
+  const shouldFail = (stage: CriticalSecureFileStage, targetPath: string): boolean =>
+    filesystemFailure.stage === stage && filesystemFailure.targetPath === targetPath
+  return {
+    ...actual,
+    fsyncSecurePathSync(path: string, flags: 'r' | 'r+'): void {
+      const directory = nodeFs.statSync(path).isDirectory()
+      const stage = directory ? 'parent-dir-fsync' : 'temp-fsync'
+      const targetPath = directory
+        ? filesystemFailure.lastRenamedTargetPath
+        : path.replace(/\.\d+\.\d+\.[0-9a-f]+\.tmp$/, '')
+      if (targetPath && shouldFail(stage, targetPath)) {
+        throw Object.assign(new Error(`injected ${stage}`), {
+          code: stage === 'parent-dir-fsync' ? 'EINVAL' : 'EIO'
+        })
+      }
+      actual.fsyncSecurePathSync(path, flags)
+    },
+    renameSecureFileSync(sourcePath: string, targetPath: string): void {
+      if (shouldFail('rename', targetPath)) {
+        throw Object.assign(new Error('injected rename'), { code: 'EIO' })
+      }
+      actual.renameSecureFileSync(sourcePath, targetPath)
+      filesystemFailure.lastRenamedTargetPath = targetPath
+    }
+  }
+})
 
 const secureWrites = vi.hoisted(
   () => [] as { targetPath: string; durability: 'best-effort' | 'critical' | 'none' }[]
@@ -33,15 +73,12 @@ import {
 import type { EphemeralVmRuntimeStatus } from '../shared/ephemeral-vm-runtimes'
 import type { EnvironmentRecipeRuntime } from '../shared/environment-recipe-runtime-rpc'
 import {
-  __setCriticalSecureFileTestHooksForTests,
-  type CriticalSecureFileStage
-} from '../shared/secure-file'
-import {
   resetEnvironmentRecipeOperationControlForTests,
   runIdempotentEnvironmentRecipeMutation
 } from './environment-recipe-operation-control'
 import {
   getEnvironmentRecipeOperationJournalPath,
+  classifyDurableEnvironmentRecipeMutationFromStore,
   prepareDurableEnvironmentRecipeMutation,
   readDurableEnvironmentRecipeMutation
 } from './environment-recipe-operation-journal'
@@ -50,6 +87,7 @@ const roots: string[] = []
 const posixIt = process.platform === 'win32' ? it.skip : it
 const operatorRecipeCatalogSha256 = 'c'.repeat(64)
 const provisionRef = 'a'.repeat(40)
+const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')
 
 function root(): string {
   const path = mkdtempSync(join(tmpdir(), 'orca-recipe-operation-durability-'))
@@ -140,18 +178,19 @@ function expectDurableWriteOrder(userDataPath: string): void {
     {
       targetPath: getEnvironmentRecipeOperationJournalPath(userDataPath),
       durability: 'critical'
-    },
-    {
-      targetPath: getEnvironmentRecipeOperationJournalPath(userDataPath),
-      durability: 'critical'
     }
   ])
 }
 
 afterEach(() => {
   resetEnvironmentRecipeOperationControlForTests()
-  __setCriticalSecureFileTestHooksForTests(null)
+  filesystemFailure.stage = null
+  filesystemFailure.targetPath = null
+  filesystemFailure.lastRenamedTargetPath = null
   secureWrites.length = 0
+  if (originalPlatform) {
+    Object.defineProperty(process, 'platform', originalPlatform)
+  }
   for (const path of roots.splice(0)) {
     rmSync(path, { recursive: true, force: true })
   }
@@ -163,8 +202,6 @@ const backedStatuses: EphemeralVmRuntimeStatus[] = ['running', 'cleaned', 'clean
 describe('environment recipe operation durability ordering', () => {
   it('does not require critical persistence for a non-operator mutation', async () => {
     const userDataPath = root()
-    __setCriticalSecureFileTestHooksForTests({ platform: 'win32' })
-
     await expect(
       runIdempotentEnvironmentRecipeMutation(
         userDataPath,
@@ -184,7 +221,7 @@ describe('environment recipe operation durability ordering', () => {
       method: 'environmentRecipes.provision',
       clientMutationId: 'unsupported-platform'
     }
-    __setCriticalSecureFileTestHooksForTests({ platform: 'win32' })
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
 
     await expect(
       runIdempotentEnvironmentRecipeMutation(
@@ -202,44 +239,123 @@ describe('environment recipe operation durability ordering', () => {
     expect(readDurableEnvironmentRecipeMutation(userDataPath, identity)).toBeNull()
   })
 
-  posixIt('does not acknowledge completion when its critical rename fails', async () => {
-    const userDataPath = root()
-    const identity = {
-      pairedDeviceId: 'paired-device',
-      method: 'environmentRecipes.provision',
-      clientMutationId: 'completion-rename-failure'
-    }
-    const journalPath = getEnvironmentRecipeOperationJournalPath(userDataPath)
-    let journalRenames = 0
-    __setCriticalSecureFileTestHooksForTests({
-      beforeStage: (stage, targetPath) => {
-        if (stage === 'rename' && targetPath === journalPath && ++journalRenames === 2) {
-          throw Object.assign(new Error('injected rename'), { code: 'EIO' })
-        }
+  posixIt(
+    'recovers completion from an exact runtime after parent-directory fsync failure',
+    async () => {
+      const userDataPath = root()
+      const identity = {
+        pairedDeviceId: 'paired-device',
+        method: 'environmentRecipes.provision',
+        clientMutationId: 'completion-parent-fsync-failure'
       }
-    })
+      const runtimePath = getEphemeralVmRuntimeStorePath(userDataPath)
+      filesystemFailure.stage = 'parent-dir-fsync'
+      filesystemFailure.targetPath = runtimePath
 
-    await expect(
-      runIdempotentEnvironmentRecipeMutation(
-        userDataPath,
-        identity.pairedDeviceId,
-        identity.method,
-        { clientMutationId: identity.clientMutationId },
-        async (control) => {
-          control.persistProvisionRef(provisionRef, 'completion-runtime')
-          persistRuntimeBacking(
-            userDataPath,
-            'completion-runtime',
-            control.requestSha256,
-            'running'
-          )
-          return result('completion-runtime', 'running')
-        },
-        { operatorRecipeCatalogSha256 }
-      )
-    ).rejects.toMatchObject({ code: 'environment_recipe_failed' })
-    expect(readDurableEnvironmentRecipeMutation(userDataPath, identity)?.state).toBe('prepared')
-  })
+      await expect(
+        runIdempotentEnvironmentRecipeMutation(
+          userDataPath,
+          identity.pairedDeviceId,
+          identity.method,
+          { clientMutationId: identity.clientMutationId },
+          async (control) => {
+            control.persistProvisionRef(provisionRef, 'completion-runtime')
+            persistRuntimeBacking(
+              userDataPath,
+              'completion-runtime',
+              control.requestSha256,
+              'running'
+            )
+            return result('completion-runtime', 'running')
+          },
+          { operatorRecipeCatalogSha256 }
+        )
+      ).rejects.toMatchObject({ code: 'environment_recipe_failed' })
+      const durable = readDurableEnvironmentRecipeMutation(userDataPath, identity)
+      expect(durable?.state).toBe('prepared')
+      expect(
+        durable && classifyDurableEnvironmentRecipeMutationFromStore(userDataPath, durable)
+      ).toBe('completed')
+
+      filesystemFailure.stage = null
+      filesystemFailure.targetPath = null
+      resetEnvironmentRecipeOperationControlForTests()
+      const replayOperation = vi.fn(async (control) => {
+        expect(control).toMatchObject({
+          provisionRef,
+          runtimeId: 'completion-runtime'
+        })
+        return result('completion-runtime', 'running')
+      })
+      await expect(
+        runIdempotentEnvironmentRecipeMutation(
+          userDataPath,
+          identity.pairedDeviceId,
+          identity.method,
+          { clientMutationId: identity.clientMutationId },
+          replayOperation,
+          { operatorRecipeCatalogSha256 }
+        )
+      ).resolves.toMatchObject({ runtimeId: 'completion-runtime' })
+      expect(replayOperation).toHaveBeenCalledOnce()
+    }
+  )
+
+  posixIt(
+    'recovers terminal replay from an exact tombstone after parent-directory fsync failure',
+    async () => {
+      const userDataPath = root()
+      const identity = {
+        pairedDeviceId: 'paired-device',
+        method: 'environmentRecipes.provision',
+        clientMutationId: 'terminal-parent-fsync-failure'
+      }
+      filesystemFailure.stage = 'parent-dir-fsync'
+      filesystemFailure.targetPath = getEphemeralVmRuntimeStorePath(userDataPath)
+
+      await expect(
+        runIdempotentEnvironmentRecipeMutation(
+          userDataPath,
+          identity.pairedDeviceId,
+          identity.method,
+          { clientMutationId: identity.clientMutationId },
+          async (control) => {
+            control.persistProvisionRef(provisionRef, 'terminal-runtime')
+            persistRuntimeBacking(
+              userDataPath,
+              'terminal-runtime',
+              control.requestSha256,
+              'cleaned'
+            )
+            control.markProvisionTerminal()
+            throw new Error('terminal provision failure')
+          },
+          { operatorRecipeCatalogSha256 }
+        )
+      ).rejects.toMatchObject({ code: 'environment_recipe_failed' })
+      const durable = readDurableEnvironmentRecipeMutation(userDataPath, identity)
+      expect(durable?.state).toBe('prepared')
+      expect(
+        durable && classifyDurableEnvironmentRecipeMutationFromStore(userDataPath, durable)
+      ).toBe('terminal')
+
+      filesystemFailure.stage = null
+      filesystemFailure.targetPath = null
+      resetEnvironmentRecipeOperationControlForTests()
+      const replayOperation = vi.fn()
+      expect(() =>
+        runIdempotentEnvironmentRecipeMutation(
+          userDataPath,
+          identity.pairedDeviceId,
+          identity.method,
+          { clientMutationId: identity.clientMutationId },
+          replayOperation,
+          { operatorRecipeCatalogSha256 }
+        )
+      ).toThrow(expect.objectContaining({ code: 'environment_recipe_conflict' }))
+      expect(replayOperation).not.toHaveBeenCalled()
+    }
+  )
 
   posixIt('persists successful runtime backing before completion and eviction', async () => {
     const userDataPath = root()
@@ -303,7 +419,7 @@ describe('environment recipe operation durability ordering', () => {
 
   posixIt.each(
     failureStages.flatMap((stage) => backedStatuses.map((status) => [stage, status] as const))
-  )('keeps a %s-failed %s backing pinned as prepared', async (stage, status) => {
+  )('handles a %s-failed %s backing without rewriting prepared identity', async (stage, status) => {
     const userDataPath = root()
     const clientMutationId = `${stage}-${status}`
     const identity = {
@@ -312,15 +428,8 @@ describe('environment recipe operation durability ordering', () => {
       clientMutationId
     }
     const runtimePath = getEphemeralVmRuntimeStorePath(userDataPath)
-    __setCriticalSecureFileTestHooksForTests({
-      beforeStage: (candidate, targetPath) => {
-        if (candidate === stage && targetPath === runtimePath) {
-          const error = new Error(`injected ${stage}`) as NodeJS.ErrnoException
-          error.code = stage === 'parent-dir-fsync' ? 'EINVAL' : 'EIO'
-          throw error
-        }
-      }
-    })
+    filesystemFailure.stage = stage
+    filesystemFailure.targetPath = runtimePath
 
     await expect(
       runIdempotentEnvironmentRecipeMutation(
@@ -346,9 +455,16 @@ describe('environment recipe operation durability ordering', () => {
     ).rejects.toMatchObject({ code: 'environment_recipe_failed' })
 
     expect(readDurableEnvironmentRecipeMutation(userDataPath, identity)?.state).toBe('prepared')
-    expect(() => evictBackedMutation(userDataPath, clientMutationId)).toThrowError(
-      expect.objectContaining({ code: 'capacity' })
-    )
-    expect(readDurableEnvironmentRecipeMutation(userDataPath, identity)?.state).toBe('prepared')
+    filesystemFailure.stage = null
+    filesystemFailure.targetPath = null
+    if (stage === 'parent-dir-fsync') {
+      evictBackedMutation(userDataPath, clientMutationId)
+      expect(readDurableEnvironmentRecipeMutation(userDataPath, identity)).toBeNull()
+    } else {
+      expect(() => evictBackedMutation(userDataPath, clientMutationId)).toThrowError(
+        expect.objectContaining({ code: 'capacity' })
+      )
+      expect(readDurableEnvironmentRecipeMutation(userDataPath, identity)?.state).toBe('prepared')
+    }
   })
 })

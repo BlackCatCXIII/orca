@@ -1,6 +1,6 @@
 import { listEphemeralVmRuntimes } from '../shared/ephemeral-vm-runtime-store'
-import type { EphemeralVmRuntimeRecord } from '../shared/ephemeral-vm-runtimes'
 import {
+  classifyDurableEnvironmentRecipeMutationFromStore,
   readDurableEnvironmentRecipeMutation,
   type DurableEnvironmentRecipeMutation,
   type EnvironmentRecipeMutationIdentity
@@ -28,11 +28,12 @@ export function resolveEnvironmentRecipeProvisionReplay(
   const durable = readDurableEnvironmentRecipeMutation(userDataPath, identity)
   if (durable) {
     requireMatchingDurableRequest(durable, requestSha256, operatorRecipeCatalogSha256)
-    if (durable.state === 'terminal') {
+    const state = classifyDurableEnvironmentRecipeMutationFromStore(userDataPath, durable)
+    if (state === 'terminal') {
       throw new EnvironmentRecipeProvisionReplayConflict(true)
     }
-    if (durable.state === 'completed') {
-      requireCompletedRuntimeBinding(userDataPath, durable)
+    if (state === 'conflict') {
+      throw new EnvironmentRecipeProvisionReplayConflict()
     }
     return {
       durable,
@@ -54,32 +55,6 @@ function requireMatchingDurableRequest(
   ) {
     throw new EnvironmentRecipeProvisionReplayConflict()
   }
-}
-
-function requireCompletedRuntimeBinding(
-  userDataPath: string,
-  durable: DurableEnvironmentRecipeMutation
-): void {
-  const runtime = listEphemeralVmRuntimes(userDataPath).find(
-    (candidate) => candidate.id === durable.runtimeId
-  )
-  if (!runtimeBindingMatches(runtime, durable)) {
-    throw new EnvironmentRecipeProvisionReplayConflict()
-  }
-}
-
-function runtimeBindingMatches(
-  runtime: EphemeralVmRuntimeRecord | undefined,
-  binding: Pick<
-    DurableEnvironmentRecipeMutation,
-    'fingerprint' | 'provisionRef' | 'operatorRecipeCatalogSha256'
-  >
-): boolean {
-  return Boolean(
-    runtime?.provisionMutation?.requestSha256 === binding.fingerprint &&
-    runtime.provisionMutation.resolvedRef === binding.provisionRef &&
-    runtime.operatorRecipeCatalogSha256 === binding.operatorRecipeCatalogSha256
-  )
 }
 
 function resolveRetainedRuntimeBinding(

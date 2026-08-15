@@ -263,22 +263,28 @@ describe('remote environment recipe runtime service', () => {
 
   it('uses operator executables while preserving the selected target repo, remote, and ref', async () => {
     const operatorDeps = { ...deps(), operatorRecipeCatalog }
-    mocks.provision.mockImplementation(async (args: { runtimeId: string }) => {
-      const runtime = upsertEphemeralVmRuntime(
-        userDataPath,
-        runningRuntime({
-          id: args.runtimeId,
-          recipe: operatorRecipe,
-          operatorRecipeCatalogSha256: operatorRecipeCatalog.status.digest,
-          sshTargetId: undefined
-        })
-      )
-      return {
-        ok: true,
-        runtime,
-        start: { ok: true, context: {}, result: runtime.recipeResult, stdout: '', stderr: '' }
+    mocks.provision.mockImplementation(
+      async (args: {
+        runtimeId: string
+        provisionMutation: { requestSha256: string; resolvedRef: string }
+      }) => {
+        const runtime = upsertEphemeralVmRuntime(
+          userDataPath,
+          runningRuntime({
+            id: args.runtimeId,
+            recipe: operatorRecipe,
+            operatorRecipeCatalogSha256: operatorRecipeCatalog.status.digest,
+            provisionMutation: args.provisionMutation,
+            sshTargetId: undefined
+          })
+        )
+        return {
+          ok: true,
+          runtime,
+          start: { ok: true, context: {}, result: runtime.recipeResult, stdout: '', stderr: '' }
+        }
       }
-    })
+    )
 
     const params = {
       repoId: 'repo-1',

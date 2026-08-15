@@ -46,6 +46,8 @@ export function upsertEphemeralVmRuntime(
 ): EphemeralVmRuntimeRecord {
   const parsed = EphemeralVmRuntimeRecordSchema.parse(record)
   const store = readEphemeralVmRuntimeStore(userDataPath)
+  const existing = store.runtimes.find((entry) => entry.id === parsed.id)
+  assertOperatorRuntimeBindingPreserved(existing, parsed)
   writeEphemeralVmRuntimeStore(
     userDataPath,
     {
@@ -57,6 +59,25 @@ export function upsertEphemeralVmRuntime(
     isOperatorRuntime(parsed) || store.runtimes.some(isOperatorRuntime)
   )
   return parsed
+}
+
+function assertOperatorRuntimeBindingPreserved(
+  existing: EphemeralVmRuntimeRecord | undefined,
+  next: EphemeralVmRuntimeRecord
+): void {
+  if (!existing?.operatorRecipeCatalogSha256) {
+    return
+  }
+  if (
+    next.operatorRecipeCatalogSha256 !== existing.operatorRecipeCatalogSha256 ||
+    next.provisionMutation?.requestSha256 !== existing.provisionMutation?.requestSha256 ||
+    next.provisionMutation?.resolvedRef !== existing.provisionMutation?.resolvedRef
+  ) {
+    throw new EphemeralVmRuntimeStoreError(
+      'invalid_argument',
+      `Operator runtime binding cannot change: ${existing.id}`
+    )
+  }
 }
 
 export function updateEphemeralVmRuntimeStatus(

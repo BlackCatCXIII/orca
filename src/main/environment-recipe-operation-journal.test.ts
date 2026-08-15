@@ -9,13 +9,12 @@ import {
   upsertEphemeralVmRuntime
 } from '../shared/ephemeral-vm-runtime-store'
 import {
-  completeDurableEnvironmentRecipeMutation,
+  classifyDurableEnvironmentRecipeMutationFromStore,
   EnvironmentRecipeOperationJournalError,
   getEnvironmentRecipeOperationJournalPath,
   prepareDurableEnvironmentRecipeMutation,
   readDurableEnvironmentRecipeMutation,
   retainCapacityForPreparedEnvironmentRecipeMutation,
-  terminateDurableEnvironmentRecipeMutation,
   type DurableEnvironmentRecipeMutation
 } from './environment-recipe-operation-journal'
 
@@ -66,9 +65,10 @@ function corruptPersistedJsonField(path: string, value: string): void {
   writeFileSync(path, bytes)
 }
 
-function persistCleanedRuntime(
+function persistRuntime(
   userDataPath: string,
-  mutation: DurableEnvironmentRecipeMutation
+  mutation: DurableEnvironmentRecipeMutation,
+  status: 'running' | 'cleaned'
 ): void {
   upsertEphemeralVmRuntime(userDataPath, {
     id: mutation.runtimeId,
@@ -78,8 +78,8 @@ function persistCleanedRuntime(
       requestSha256: mutation.fingerprint,
       resolvedRef: mutation.provisionRef
     },
-    status: 'cleaned',
-    cleanupStatus: 'succeeded',
+    status,
+    cleanupStatus: status === 'cleaned' ? 'succeeded' : 'not_started',
     createdAt: mutation.createdAt,
     updatedAt: mutation.updatedAt,
     recipeResult: {
@@ -100,6 +100,13 @@ function persistCleanedRuntime(
   })
 }
 
+function persistCleanedRuntime(
+  userDataPath: string,
+  mutation: DurableEnvironmentRecipeMutation
+): void {
+  persistRuntime(userDataPath, mutation, 'cleaned')
+}
+
 describe('environment recipe operation journal', () => {
   const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')
 
@@ -116,32 +123,66 @@ describe('environment recipe operation journal', () => {
     }
   })
 
-  it('durably transitions prepared mutations to completed or terminal states', () => {
+  it('keeps prepared identity bytes and derives completed or terminal state from runtime backing', () => {
     const userDataPath = root()
+    const completed = entry('mutation-1', 'prepared', 1)
     prepareDurableEnvironmentRecipeMutation(userDataPath, {
       ...identity,
-      fingerprint: 'f'.repeat(64),
-      provisionRef: 'a'.repeat(40),
-      runtimeId: 'runtime-1',
-      operatorRecipeCatalogSha256: 'c'.repeat(64)
+      ...prepareInput(completed)
     })
     expect(readDurableEnvironmentRecipeMutation(userDataPath, identity)?.state).toBe('prepared')
+    persistRuntime(userDataPath, completed, 'running')
+    expect(classifyDurableEnvironmentRecipeMutationFromStore(userDataPath, completed)).toBe(
+      'completed'
+    )
+    expect(readDurableEnvironmentRecipeMutation(userDataPath, identity)?.state).toBe('prepared')
 
-    completeDurableEnvironmentRecipeMutation(userDataPath, identity)
-    expect(readDurableEnvironmentRecipeMutation(userDataPath, identity)?.state).toBe('completed')
-
-    const terminalIdentity = { ...identity, clientMutationId: 'mutation-terminal' }
-    prepareDurableEnvironmentRecipeMutation(userDataPath, {
-      ...terminalIdentity,
-      fingerprint: 'e'.repeat(64),
-      provisionRef: 'b'.repeat(40),
-      runtimeId: 'runtime-terminal',
-      operatorRecipeCatalogSha256: 'c'.repeat(64)
-    })
-    terminateDurableEnvironmentRecipeMutation(userDataPath, terminalIdentity)
-    expect(readDurableEnvironmentRecipeMutation(userDataPath, terminalIdentity)?.state).toBe(
+    const terminal = entry('mutation-terminal', 'prepared', 2)
+    prepareDurableEnvironmentRecipeMutation(userDataPath, prepareInput(terminal))
+    persistRuntime(userDataPath, terminal, 'cleaned')
+    expect(classifyDurableEnvironmentRecipeMutationFromStore(userDataPath, terminal)).toBe(
       'terminal'
     )
+    expect(readDurableEnvironmentRecipeMutation(userDataPath, terminal)?.state).toBe('prepared')
+  })
+
+  it('reads legacy completed and terminal entries without rewriting them', () => {
+    const userDataPath = root()
+    const completed = entry('legacy-completed', 'completed', 1)
+    const terminal = entry('legacy-terminal', 'terminal', 2)
+    persistRuntime(userDataPath, completed, 'running')
+    writeFileSync(
+      getEnvironmentRecipeOperationJournalPath(userDataPath),
+      JSON.stringify({ version: 1, entries: [completed, terminal] }),
+      'utf8'
+    )
+
+    expect(classifyDurableEnvironmentRecipeMutationFromStore(userDataPath, completed)).toBe(
+      'completed'
+    )
+    expect(classifyDurableEnvironmentRecipeMutationFromStore(userDataPath, terminal)).toBe(
+      'terminal'
+    )
+  })
+
+  it('does not evict a legacy terminal entry without an exact runtime tombstone', () => {
+    const userDataPath = root()
+    const terminal = entry('legacy-terminal-without-tombstone', 'terminal', 1)
+    writeFileSync(
+      getEnvironmentRecipeOperationJournalPath(userDataPath),
+      JSON.stringify({ version: 1, entries: [terminal] }),
+      'utf8'
+    )
+
+    expect(() =>
+      prepareDurableEnvironmentRecipeMutation(
+        userDataPath,
+        prepareInput(entry('next-attempt', 'prepared', 2)),
+        2,
+        1
+      )
+    ).toThrow(expect.objectContaining({ code: 'capacity' }))
+    expect(readDurableEnvironmentRecipeMutation(userDataPath, terminal)).toEqual(terminal)
   })
 
   it('evicts the oldest backed terminal entry and fails closed with uncertain capacity', () => {
@@ -172,14 +213,12 @@ describe('environment recipe operation journal', () => {
 
     prepareDurableEnvironmentRecipeMutation(userDataPath, prepareInput(first), 1, 2)
     persistCleanedRuntime(userDataPath, first)
-    terminateDurableEnvironmentRecipeMutation(userDataPath, first, 1)
     prepareDurableEnvironmentRecipeMutation(userDataPath, prepareInput(second), 2, 2)
     persistCleanedRuntime(userDataPath, second)
-    terminateDurableEnvironmentRecipeMutation(userDataPath, second, 2)
     prepareDurableEnvironmentRecipeMutation(userDataPath, prepareInput(third), 3, 2)
 
     expect(readDurableEnvironmentRecipeMutation(userDataPath, first)).toBeNull()
-    expect(readDurableEnvironmentRecipeMutation(userDataPath, second)?.state).toBe('terminal')
+    expect(readDurableEnvironmentRecipeMutation(userDataPath, second)?.state).toBe('prepared')
     expect(readDurableEnvironmentRecipeMutation(userDataPath, third)?.state).toBe('prepared')
   })
 
@@ -235,10 +274,8 @@ describe('environment recipe operation journal', () => {
 
     prepareDurableEnvironmentRecipeMutation(userDataPath, prepareInput(first), 1, 2)
     persistCleanedRuntime(userDataPath, first)
-    terminateDurableEnvironmentRecipeMutation(userDataPath, first, 1)
     prepareDurableEnvironmentRecipeMutation(userDataPath, prepareInput(second), 2, 2)
     persistCleanedRuntime(userDataPath, second)
-    terminateDurableEnvironmentRecipeMutation(userDataPath, second, 2)
     prepareDurableEnvironmentRecipeMutation(userDataPath, prepareInput(third), 3, 2)
     expect(readDurableEnvironmentRecipeMutation(userDataPath, first)).toBeNull()
 

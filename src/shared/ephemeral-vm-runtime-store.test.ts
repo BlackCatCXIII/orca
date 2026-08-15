@@ -1,7 +1,36 @@
 import { mkdtempSync, readFileSync, rmSync, truncateSync, writeFileSync } from 'node:fs'
+import type * as NodeFs from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type * as SecureFileFilesystem from './secure-file-filesystem'
+
+const filesystemFailure = vi.hoisted(() => ({
+  stage: null as 'temp-fsync' | 'rename' | 'parent-dir-fsync' | null
+}))
+
+vi.mock('./secure-file-filesystem', async (importOriginal) => {
+  const actual = await importOriginal<typeof SecureFileFilesystem>()
+  const nodeFs = await vi.importActual<typeof NodeFs>('node:fs')
+  return {
+    ...actual,
+    fsyncSecurePathSync(path: string, flags: 'r' | 'r+'): void {
+      const stage = nodeFs.statSync(path).isDirectory() ? 'parent-dir-fsync' : 'temp-fsync'
+      if (filesystemFailure.stage === stage) {
+        throw Object.assign(new Error(`injected ${stage}`), {
+          code: stage === 'parent-dir-fsync' ? 'EINVAL' : 'EIO'
+        })
+      }
+      actual.fsyncSecurePathSync(path, flags)
+    },
+    renameSecureFileSync(sourcePath: string, targetPath: string): void {
+      if (filesystemFailure.stage === 'rename') {
+        throw Object.assign(new Error('injected rename'), { code: 'EIO' })
+      }
+      actual.renameSecureFileSync(sourcePath, targetPath)
+    }
+  }
+})
 import { encodePairingOffer, PAIRING_OFFER_VERSION } from './pairing'
 import {
   EphemeralVmRuntimeStoreError,
@@ -13,7 +42,6 @@ import {
   upsertEphemeralVmRuntime
 } from './ephemeral-vm-runtime-store'
 import type { EphemeralVmRuntimeRecord } from './ephemeral-vm-runtimes'
-import { __setCriticalSecureFileTestHooksForTests } from './secure-file'
 
 const posixIt = process.platform === 'win32' ? it.skip : it
 
@@ -70,7 +98,7 @@ describe('ephemeral VM runtime store', () => {
   })
 
   afterEach(() => {
-    __setCriticalSecureFileTestHooksForTests(null)
+    filesystemFailure.stage = null
     if (originalPlatform) {
       Object.defineProperty(process, 'platform', originalPlatform)
     }
@@ -263,7 +291,7 @@ describe('ephemeral VM runtime store', () => {
 
   it('keeps local-only runtime stores on best-effort durability', () => {
     const userDataPath = makeUserDataPath()
-    __setCriticalSecureFileTestHooksForTests({ platform: 'win32' })
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
 
     expect(() => upsertEphemeralVmRuntime(userDataPath, runtimeRecord())).not.toThrow()
     expect(listEphemeralVmRuntimes(userDataPath)).toHaveLength(1)
@@ -275,7 +303,7 @@ describe('ephemeral VM runtime store', () => {
       operatorRecipeCatalogSha256: 'c'.repeat(64),
       provisionMutation: { requestSha256: 'f'.repeat(64), resolvedRef: 'a'.repeat(40) }
     })
-    __setCriticalSecureFileTestHooksForTests({ platform: 'win32' })
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
 
     expect(() => upsertEphemeralVmRuntime(userDataPath, operatorRuntime)).toThrow(
       'Critical secure-file durability is unavailable on Windows.'
@@ -286,8 +314,6 @@ describe('ephemeral VM runtime store', () => {
       getEphemeralVmRuntimeStorePath(userDataPath),
       JSON.stringify({ version: 1, runtimes: [operatorRuntime] })
     )
-    __setCriticalSecureFileTestHooksForTests({ platform: 'win32' })
-
     expect(() =>
       upsertEphemeralVmRuntime(userDataPath, runtimeRecord({ id: 'local-runtime' }))
     ).toThrow('Critical secure-file durability is unavailable on Windows.')
@@ -299,20 +325,60 @@ describe('ephemeral VM runtime store', () => {
 
   posixIt('propagates unsupported operator parent-directory durability', () => {
     const userDataPath = makeUserDataPath()
-    const error = Object.assign(new Error('directory fsync unsupported'), { code: 'EINVAL' })
-    __setCriticalSecureFileTestHooksForTests({
-      beforeStage: (stage) => {
-        if (stage === 'parent-dir-fsync') {
-          throw error
-        }
-      }
-    })
+    filesystemFailure.stage = 'parent-dir-fsync'
 
     expect(() =>
       upsertEphemeralVmRuntime(
         userDataPath,
         runtimeRecord({ operatorRecipeCatalogSha256: 'c'.repeat(64) })
       )
-    ).toThrow(error)
+    ).toThrow(expect.objectContaining({ code: 'EINVAL' }))
+  })
+
+  it.each([
+    ['catalog removal', { operatorRecipeCatalogSha256: undefined }],
+    ['catalog drift', { operatorRecipeCatalogSha256: 'd'.repeat(64) }],
+    ['provision binding removal', { provisionMutation: undefined }],
+    [
+      'request binding drift',
+      { provisionMutation: { requestSha256: 'e'.repeat(64), resolvedRef: 'a'.repeat(40) } }
+    ],
+    [
+      'resolved ref drift',
+      { provisionMutation: { requestSha256: 'f'.repeat(64), resolvedRef: 'b'.repeat(40) } }
+    ]
+  ])('rejects same-ID operator %s', (_name, bindingOverride) => {
+    const userDataPath = makeUserDataPath()
+    const operatorRuntime = runtimeRecord({
+      operatorRecipeCatalogSha256: 'c'.repeat(64),
+      provisionMutation: { requestSha256: 'f'.repeat(64), resolvedRef: 'a'.repeat(40) }
+    })
+    upsertEphemeralVmRuntime(userDataPath, operatorRuntime)
+
+    expect(() =>
+      upsertEphemeralVmRuntime(userDataPath, {
+        ...operatorRuntime,
+        ...bindingOverride,
+        status: 'suspended',
+        updatedAt: 2_000
+      })
+    ).toThrow(expect.objectContaining({ code: 'invalid_argument' }))
+    expect(listEphemeralVmRuntimes(userDataPath)).toEqual([operatorRuntime])
+  })
+
+  it('allows identical operator binding replay and ordinary nonoperator replacement', () => {
+    const userDataPath = makeUserDataPath()
+    const operatorRuntime = runtimeRecord({
+      operatorRecipeCatalogSha256: 'c'.repeat(64),
+      provisionMutation: { requestSha256: 'f'.repeat(64), resolvedRef: 'a'.repeat(40) }
+    })
+    upsertEphemeralVmRuntime(userDataPath, operatorRuntime)
+    const updatedOperator = { ...operatorRuntime, status: 'suspended' as const, updatedAt: 2_000 }
+    expect(upsertEphemeralVmRuntime(userDataPath, updatedOperator)).toEqual(updatedOperator)
+
+    const localPath = makeUserDataPath()
+    upsertEphemeralVmRuntime(localPath, runtimeRecord())
+    const replacedLocal = runtimeRecord({ status: 'suspended', updatedAt: 2_000 })
+    expect(upsertEphemeralVmRuntime(localPath, replacedLocal)).toEqual(replacedLocal)
   })
 })
