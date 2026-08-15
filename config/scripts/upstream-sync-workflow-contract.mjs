@@ -71,7 +71,8 @@ export function validateDailyUpstreamSyncWorkflow(source) {
   requireValue(checkout.token === '', 'checkout token must be explicitly empty', failures)
   const node = steps.find((step) => step.uses?.startsWith('actions/setup-node@'))
   requireValue(
-    JSON.stringify(node?.with) === JSON.stringify({ 'node-version-file': 'package.json' }),
+    JSON.stringify(node?.with) ===
+      JSON.stringify({ 'node-version-file': 'package.json', 'package-manager-cache': false }),
     'setup-node must not use GitHub dependency caching',
     failures
   )

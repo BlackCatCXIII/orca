@@ -81,9 +81,14 @@ describe('daily upstream sync workflow', () => {
     expect(
       validateDailyUpstreamSyncWorkflow(
         source.replace(
-          '          node-version-file: package.json',
-          '          node-version-file: package.json\n          cache: pnpm'
+          '          package-manager-cache: false',
+          '          package-manager-cache: false\n          cache: pnpm'
         )
+      )
+    ).toContain('setup-node must not use GitHub dependency caching')
+    expect(
+      validateDailyUpstreamSyncWorkflow(
+        source.replace('          package-manager-cache: false\n', '')
       )
     ).toContain('setup-node must not use GitHub dependency caching')
   })

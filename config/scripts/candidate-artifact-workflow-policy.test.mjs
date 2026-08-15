@@ -202,6 +202,13 @@ const adversarialCases = [
     }
   ],
   [
+    'implicit setup-node package-manager cache',
+    (workflow) => {
+      delete workflow.jobs.policy.steps.find((step) => step.uses?.startsWith('actions/setup-node@'))
+        .with['package-manager-cache']
+    }
+  ],
+  [
     'mutable MinIO prefix',
     (workflow) => {
       const retention = workflow.jobs['desktop-linux-x64'].steps.find((step) =>

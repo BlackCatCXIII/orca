@@ -8,9 +8,9 @@ import { validateCandidateArtifactPolicy } from './candidate-artifact-policy.mjs
 const workflowRevision = '${{ github.workflow_sha }}'
 const checkoutAction = 'actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683'
 const pnpmAction = 'pnpm/action-setup@f2b2b233b538f500472c7274c7012f57857d8ce0'
-const nodeAction = 'actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8'
+const nodeAction = 'actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38'
 const approvedActions = new Set([checkoutAction, pnpmAction, nodeAction])
-const expectedWorkflowDigest = 'e9ede3191d3b83054ec32fc74c7401eeb708c6e1ebaa74916646eedd020c6a9f'
+const expectedWorkflowDigest = '7201840208ac9f0458479e0b6a7651fa45ed6bb7e6fb45f1e3488a5119ed545b'
 const expectedPlatforms = [
   'desktop-linux-arm64',
   'desktop-linux-x64',
@@ -36,7 +36,6 @@ const forbiddenSurfacePatterns = [
   /\b(?:GITHUB_TOKEN|GH_TOKEN)\b/i,
   /\b(?:ubuntu-latest|ubuntu-[0-9]|windows-[0-9]|macos-[0-9]|blacksmith)\b/i,
   /actions\/(?:upload-artifact|download-artifact|cache)@/i,
-  /setup-node[^}]*["']?cache["']?\s*:/i,
   /--publish\s+(?!never\b)\S+/i,
   /\b(?:git\s+(?:push|tag)|gh\s+(?:api|release)|docker\s+push|podman\s+push)\b/i,
   /\b(?:npm|pnpm|yarn|cargo)\s+publish\b/i,
@@ -155,7 +154,10 @@ function validateActions(name, job) {
       {
         name: 'Setup Node.js',
         uses: nodeAction,
-        with: { 'node-version-file': name === 'policy' ? 'package.json' : 'source/package.json' }
+        with: {
+          'node-version-file': name === 'policy' ? 'package.json' : 'source/package.json',
+          'package-manager-cache': false
+        }
       }
     ],
     `${name} Node action`
