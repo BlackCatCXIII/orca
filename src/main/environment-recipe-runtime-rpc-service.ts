@@ -17,7 +17,7 @@ import {
 } from './ephemeral-vm-runtime-service'
 import { getProvisionedRootRecipeRepoUrl } from '../shared/ephemeral-vm-recipe-repo-url'
 import {
-  environmentRecipeMutationRuntimeId,
+  environmentRecipeMutationRuntimeId as mutationRuntimeId,
   EnvironmentRecipeRpcError,
   resetEnvironmentRecipeOperationControlForTests as resetRpcState,
   runIdempotentEnvironmentRecipeMutation,
@@ -43,7 +43,7 @@ import {
 } from './environment-recipe-provision-ref'
 import {
   operatorEnvironmentRecipeProvisionMutationBinding,
-  requireEnvironmentRecipeProvisionMutationBinding
+  requireEnvironmentRecipeProvisionReplayBinding
 } from './environment-recipe-provision-mutation-binding'
 import { failedOperation, invalidLifecycleState } from './environment-recipe-rpc-errors'
 
@@ -100,11 +100,9 @@ export function provisionEnvironmentRecipeForRpc(
     params,
     async (mutation) => {
       const repo = requireEnvironmentRecipeRepo(deps.runtime, params.repoId)
-      const runtimeId = environmentRecipeMutationRuntimeId(
-        deps.userDataPath,
-        deps.pairedDeviceId,
-        params.clientMutationId
-      )
+      const runtimeId =
+        mutation.runtimeId ??
+        mutationRuntimeId(deps.userDataPath, deps.pairedDeviceId, params.clientMutationId)
       const existing = listEphemeralVmRuntimes(deps.userDataPath).find(
         (runtime) => runtime.id === runtimeId
       )
@@ -114,6 +112,7 @@ export function provisionEnvironmentRecipeForRpc(
           'Recipe-created runtime requires its operator catalog.'
         )
       }
+      requireEnvironmentRecipeProvisionReplayBinding(existing, mutation)
       const recipe = await requireEnvironmentRecipe(
         repo,
         params.recipeId,
@@ -121,7 +120,6 @@ export function provisionEnvironmentRecipeForRpc(
         deps.operatorRecipeCatalog
       )
       if (existing) {
-        requireEnvironmentRecipeProvisionMutationBinding(existing, mutation)
         requireEnvironmentRecipeRuntimeScope(existing, params)
         if (
           deps.operatorRecipeCatalog &&

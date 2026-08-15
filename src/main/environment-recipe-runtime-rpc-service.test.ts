@@ -12,6 +12,7 @@ import {
 } from '../shared/ephemeral-vm-runtime-store'
 import type { EphemeralVmRuntimeRecord } from '../shared/ephemeral-vm-runtimes'
 import type { OperatorEnvironmentRecipeCatalog } from './operator-environment-recipe-catalog'
+import { environmentRecipeMutationRuntimeId } from './environment-recipe-operation-control'
 
 const mocks = vi.hoisted(() => ({
   provision: vi.fn(),
@@ -312,6 +313,81 @@ describe('remote environment recipe runtime service', () => {
       code: 'environment_recipe_not_found'
     })
     expect(mocks.provision).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    ['the same request', {}],
+    ['a changed ref', { ref: 'b'.repeat(40) }],
+    ['a changed branch', { branch: 'feature/changed' }],
+    ['a changed project', { projectId: 'project-2' }],
+    ['a changed workspace', { workspaceId: 'workspace-2' }]
+  ])(
+    'rejects %s after restart when an operator runtime lacks its binding',
+    async (_name, change) => {
+      const clientMutationId = 'operator-missing-binding'
+      const params = {
+        repoId: 'repo-1',
+        recipeId: operatorRecipe.id,
+        clientMutationId,
+        projectId: 'project-1',
+        workspaceId: 'workspace-1',
+        workspaceName: 'Workspace One',
+        branch: 'feature/original',
+        ref: 'a'.repeat(40)
+      }
+      upsertEphemeralVmRuntime(
+        userDataPath,
+        runningRuntime({
+          id: environmentRecipeMutationRuntimeId(userDataPath, 'paired-phone', clientMutationId),
+          recipe: operatorRecipe,
+          operatorRecipeCatalogSha256: operatorRecipeCatalog.status.digest,
+          projectId: params.projectId,
+          workspaceId: params.workspaceId,
+          workspaceName: params.workspaceName,
+          sshTargetId: undefined
+        })
+      )
+      resetEnvironmentRecipeRpcStateForTests()
+      const listRecipes = vi.fn(() => [operatorRecipe])
+
+      await expect(
+        provisionEnvironmentRecipeForRpc(
+          {
+            ...deps(),
+            operatorRecipeCatalog: { ...operatorRecipeCatalog, listRecipes }
+          },
+          { ...params, ...change }
+        )
+      ).rejects.toMatchObject({ code: 'environment_recipe_conflict' })
+      expect(listRecipes).not.toHaveBeenCalled()
+      expect(mocks.provision).not.toHaveBeenCalled()
+      expect(mocks.connectSsh).not.toHaveBeenCalled()
+    }
+  )
+
+  it('keeps restart replay compatible for non-operator runtimes without bindings', async () => {
+    const params = {
+      repoId: 'repo-1',
+      recipeId: recipe.id,
+      clientMutationId: 'legacy-missing-binding'
+    }
+    upsertEphemeralVmRuntime(
+      userDataPath,
+      runningRuntime({
+        id: environmentRecipeMutationRuntimeId(
+          userDataPath,
+          'paired-phone',
+          params.clientMutationId
+        )
+      })
+    )
+    resetEnvironmentRecipeRpcStateForTests()
+
+    await expect(provisionEnvironmentRecipeForRpc(deps(), params)).resolves.toMatchObject({
+      repoId: params.repoId,
+      recipeId: params.recipeId
+    })
+    expect(mocks.provision).not.toHaveBeenCalled()
   })
 
   it('hides operator-bound runtimes without the exact active catalog identity', () => {

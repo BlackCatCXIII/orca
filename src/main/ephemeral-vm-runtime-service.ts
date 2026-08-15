@@ -9,12 +9,12 @@ import {
   runEphemeralVmRecipeResume,
   runEphemeralVmRecipeSuspend,
   runEphemeralVmRecipeStart,
-  type EphemeralVmRecipeContext,
   type EphemeralVmRecipeStartFailure,
   type EphemeralVmRecipeStartSuccess
 } from './ephemeral-vm-recipe-runner'
 import { cleanupFailedEphemeralVmStart } from './ephemeral-vm-failed-start-cleanup'
 import { provisionedRootChangedDuringResume } from './ephemeral-vm-resume-integrity'
+import { ephemeralVmRecipeContextFromRuntime } from './ephemeral-vm-runtime-context'
 import { recordProvisionedEphemeralVmRuntime } from './ephemeral-vm-runtime-recording'
 
 export type ProvisionEphemeralVmRuntimeArgs = {
@@ -190,7 +190,7 @@ async function cleanupEphemeralVmRuntimeOnce(
     repoPath: args.repoPath,
     recipe: args.recipe,
     executionMode: args.executionMode,
-    context: contextFromRuntime(args.repoPath, running),
+    context: ephemeralVmRecipeContextFromRuntime(args.repoPath, running),
     recipeResult: running.recipeResult,
     signal: args.signal,
     onStdout: args.onStdout,
@@ -230,7 +230,7 @@ export async function suspendEphemeralVmRuntime(
     repoPath: args.repoPath,
     recipe: args.recipe,
     executionMode: args.executionMode,
-    context: contextFromRuntime(args.repoPath, existing),
+    context: ephemeralVmRecipeContextFromRuntime(args.repoPath, existing),
     recipeResult: existing.recipeResult,
     signal: args.signal,
     onStdout: args.onStdout,
@@ -266,7 +266,7 @@ export async function resumeEphemeralVmRuntime(
     repoPath: args.repoPath,
     recipe: args.recipe,
     executionMode: args.executionMode,
-    context: contextFromRuntime(args.repoPath, existing),
+    context: ephemeralVmRecipeContextFromRuntime(args.repoPath, existing),
     recipeResult: existing.recipeResult,
     signal: args.signal,
     onStdout: args.onStdout,
@@ -308,19 +308,5 @@ function requireOperatorRuntimeAuthority(
       args.operatorRecipeCatalogSha256 !== runtime.operatorRecipeCatalogSha256)
   ) {
     throw new Error('Operator-managed ephemeral VM runtime is unavailable.')
-  }
-}
-
-function contextFromRuntime(
-  repoPath: string,
-  runtime: EphemeralVmRuntimeRecord
-): EphemeralVmRecipeContext {
-  return {
-    instanceId: runtime.id,
-    recipeId: runtime.recipeId,
-    projectId: runtime.projectId,
-    workspaceId: runtime.workspaceId,
-    workspaceName: runtime.workspaceName,
-    repoPath
   }
 }

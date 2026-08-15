@@ -1,19 +1,37 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type * as RuntimeServiceModule from './ephemeral-vm-runtime-service'
-import { upsertEphemeralVmRuntime } from '../shared/ephemeral-vm-runtime-store'
+import type * as RuntimeSshModule from './ephemeral-vm-runtime-ssh'
+import {
+  listEphemeralVmRuntimes,
+  upsertEphemeralVmRuntime
+} from '../shared/ephemeral-vm-runtime-store'
 import type { Repo } from '../shared/repo-types'
 import type { OperatorEnvironmentRecipeCatalog } from './operator-environment-recipe-catalog'
 import { resolveEnvironmentRecipeProvisionRef } from './environment-recipe-provision-ref'
-import { getEnvironmentRecipeOperationJournalPath } from './environment-recipe-operation-journal'
+import {
+  completeDurableEnvironmentRecipeMutation,
+  getEnvironmentRecipeOperationJournalPath,
+  prepareDurableEnvironmentRecipeMutation
+} from './environment-recipe-operation-journal'
+import {
+  environmentRecipeMutationRequestSha256,
+  environmentRecipeMutationRuntimeId
+} from './environment-recipe-operation-control'
 
 const provisionMock = vi.hoisted(() => vi.fn())
+const connectSshMock = vi.hoisted(() => vi.fn())
 
 vi.mock('./ephemeral-vm-runtime-service', async (importOriginal) => ({
   ...(await importOriginal<typeof RuntimeServiceModule>()),
   provisionEphemeralVmRuntime: provisionMock
+}))
+
+vi.mock('./ephemeral-vm-runtime-ssh', async (importOriginal) => ({
+  ...(await importOriginal<typeof RuntimeSshModule>()),
+  connectRuntimeOwnedSshTarget: connectSshMock
 }))
 
 import {
@@ -43,6 +61,8 @@ const targetRepo: Repo = {
 }
 
 let userDataPath: string
+let primaryUserDataPath: string
+let aliasRoot: string | undefined
 
 function dependencies(
   repo: Repo = targetRepo,
@@ -58,43 +78,69 @@ function dependencies(
   }
 }
 
+function persistOperatorRuntime(
+  path: string,
+  args: {
+    runtimeId: string
+    requestSha256?: string
+    resolvedRef?: string
+    catalogSha256?: string
+  }
+) {
+  return upsertEphemeralVmRuntime(path, {
+    id: args.runtimeId,
+    repoId: targetRepo.id,
+    recipeId: recipe.id,
+    recipe,
+    operatorRecipeCatalogSha256: args.catalogSha256 ?? catalog.status.digest,
+    ...(args.requestSha256 && args.resolvedRef
+      ? {
+          provisionMutation: {
+            requestSha256: args.requestSha256,
+            resolvedRef: args.resolvedRef
+          }
+        }
+      : {}),
+    status: 'running',
+    cleanupStatus: 'not_started',
+    connectionMode: 'ssh',
+    sshTargetId: 'runtime-ssh-pinned',
+    createdAt: 1,
+    updatedAt: 1,
+    recipeResult: {
+      schemaVersion: 2,
+      checkoutMode: 'provisioned-root',
+      connection: {
+        type: 'ssh',
+        projectRoot: '/srv/repo',
+        target: {
+          label: 'host',
+          host: 'host',
+          port: 22,
+          username: 'root',
+          hostKey: { type: 'sha256', fingerprint: `SHA256:${'A'.repeat(43)}` }
+        }
+      }
+    }
+  })
+}
+
 beforeEach(() => {
-  userDataPath = mkdtempSync(join(tmpdir(), 'orca-operator-provision-ref-'))
+  primaryUserDataPath = mkdtempSync(join(tmpdir(), 'orca-operator-provision-ref-'))
+  userDataPath = primaryUserDataPath
+  aliasRoot = undefined
   resetEnvironmentRecipeRpcStateForTests()
   provisionMock.mockReset()
+  connectSshMock.mockReset()
   provisionMock.mockImplementation(
     async (args: {
       runtimeId: string
       provisionMutation?: { requestSha256: string; resolvedRef: string }
     }) => {
-      const runtime = upsertEphemeralVmRuntime(userDataPath, {
-        id: args.runtimeId,
-        repoId: targetRepo.id,
-        recipeId: recipe.id,
-        recipe,
-        operatorRecipeCatalogSha256: catalog.status.digest,
-        ...(args.provisionMutation ? { provisionMutation: args.provisionMutation } : {}),
-        status: 'running',
-        cleanupStatus: 'not_started',
-        connectionMode: 'ssh',
-        sshTargetId: 'runtime-ssh-pinned',
-        createdAt: 1,
-        updatedAt: 1,
-        recipeResult: {
-          schemaVersion: 2,
-          checkoutMode: 'provisioned-root',
-          connection: {
-            type: 'ssh',
-            projectRoot: '/srv/repo',
-            target: {
-              label: 'host',
-              host: 'host',
-              port: 22,
-              username: 'root',
-              hostKey: { type: 'sha256', fingerprint: `SHA256:${'A'.repeat(43)}` }
-            }
-          }
-        }
+      const runtime = persistOperatorRuntime(userDataPath, {
+        runtimeId: args.runtimeId,
+        requestSha256: args.provisionMutation?.requestSha256,
+        resolvedRef: args.provisionMutation?.resolvedRef
       })
       return { ok: true, runtime, start: { ok: true } }
     }
@@ -102,10 +148,210 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  rmSync(userDataPath, { recursive: true, force: true })
+  if (aliasRoot) {
+    rmSync(aliasRoot, { recursive: true, force: true })
+  }
+  rmSync(primaryUserDataPath, { recursive: true, force: true })
 })
 
+function aliasUserDataPath(): string {
+  aliasRoot = mkdtempSync(join(tmpdir(), 'orca-operator-provision-alias-'))
+  const alias = join(aliasRoot, 'profile')
+  symlinkSync(primaryUserDataPath, alias, process.platform === 'win32' ? 'junction' : 'dir')
+  return alias
+}
+
+function prepareProvisionMutation(
+  params: { clientMutationId: string } & Record<string, unknown>,
+  runtimeId: string,
+  state: 'prepared' | 'completed' = 'prepared'
+): void {
+  const identity = {
+    pairedDeviceId: 'paired-device',
+    method: 'environmentRecipes.provision',
+    clientMutationId: params.clientMutationId
+  }
+  prepareDurableEnvironmentRecipeMutation(primaryUserDataPath, {
+    ...identity,
+    fingerprint: environmentRecipeMutationRequestSha256(params),
+    provisionRef: 'a'.repeat(40),
+    runtimeId,
+    operatorRecipeCatalogSha256: catalog.status.digest
+  })
+  if (state === 'completed') {
+    completeDurableEnvironmentRecipeMutation(primaryUserDataPath, identity)
+  }
+}
+
 describe('operator environment recipe provision ref service', () => {
+  it.each([
+    ['missing', null],
+    ['request SHA mismatch', { requestSha256: 'e'.repeat(64) }],
+    ['resolved ref mismatch', { resolvedRef: 'b'.repeat(40) }],
+    ['catalog mismatch', { catalogSha256: 'd'.repeat(64) }]
+  ])('fails closed for completed replay with %s backing', async (_name, mismatch) => {
+    const params = {
+      repoId: targetRepo.id,
+      recipeId: recipe.id,
+      clientMutationId: `completed-${_name}`
+    }
+    const runtimeId = `runtime-${params.clientMutationId}`
+    const requestSha256 = environmentRecipeMutationRequestSha256(params)
+    prepareProvisionMutation(params, runtimeId, 'completed')
+    if (mismatch) {
+      persistOperatorRuntime(primaryUserDataPath, {
+        runtimeId,
+        requestSha256,
+        resolvedRef: 'a'.repeat(40),
+        ...mismatch
+      })
+    }
+    resetEnvironmentRecipeRpcStateForTests()
+    const listRecipes = vi.fn(() => [recipe])
+    const getPluginRecipes = vi.fn(async () => [recipe])
+
+    await expect(
+      Promise.resolve().then(() =>
+        provisionEnvironmentRecipeForRpc(
+          {
+            ...dependencies(),
+            getPluginRecipes,
+            operatorRecipeCatalog: { ...catalog, listRecipes }
+          },
+          params
+        )
+      )
+    ).rejects.toMatchObject({ code: 'environment_recipe_conflict' })
+    expect(provisionMock).not.toHaveBeenCalled()
+    expect(listRecipes).not.toHaveBeenCalled()
+    expect(getPluginRecipes).not.toHaveBeenCalled()
+    expect(connectSshMock).not.toHaveBeenCalled()
+  })
+
+  it('resumes a prepared mutation through a profile alias with its durable runtime ID', async () => {
+    const params = {
+      repoId: targetRepo.id,
+      recipeId: recipe.id,
+      clientMutationId: 'prepared-alias'
+    }
+    const runtimeId = environmentRecipeMutationRuntimeId(
+      primaryUserDataPath,
+      'paired-device',
+      params.clientMutationId
+    )
+    const resolver = vi.fn()
+    prepareProvisionMutation(params, runtimeId)
+    resetEnvironmentRecipeRpcStateForTests()
+    userDataPath = aliasUserDataPath()
+    expect(
+      environmentRecipeMutationRuntimeId(userDataPath, 'paired-device', params.clientMutationId)
+    ).not.toBe(runtimeId)
+
+    await expect(
+      provisionEnvironmentRecipeForRpc(dependencies(targetRepo, resolver), params)
+    ).resolves.toMatchObject({ runtimeId })
+    expect(resolver).not.toHaveBeenCalled()
+    expect(provisionMock).toHaveBeenCalledOnce()
+    expect(provisionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ runtimeId, ref: 'a'.repeat(40) })
+    )
+    expect(listEphemeralVmRuntimes(primaryUserDataPath).map((runtime) => runtime.id)).toEqual([
+      runtimeId
+    ])
+  })
+
+  it('reuses a completed mutation through a profile alias without reprovisioning', async () => {
+    const params = {
+      repoId: targetRepo.id,
+      recipeId: recipe.id,
+      clientMutationId: 'completed-alias'
+    }
+    const resolver = vi.fn().mockResolvedValue('a'.repeat(40))
+    const first = await provisionEnvironmentRecipeForRpc(dependencies(targetRepo, resolver), params)
+    resetEnvironmentRecipeRpcStateForTests()
+    userDataPath = aliasUserDataPath()
+    expect(
+      environmentRecipeMutationRuntimeId(userDataPath, 'paired-device', params.clientMutationId)
+    ).not.toBe(first.runtimeId)
+
+    await expect(
+      provisionEnvironmentRecipeForRpc(dependencies(targetRepo, resolver), params)
+    ).resolves.toMatchObject({ runtimeId: first.runtimeId })
+    expect(provisionMock).toHaveBeenCalledOnce()
+    expect(resolver).toHaveBeenCalledOnce()
+    expect(connectSshMock).not.toHaveBeenCalled()
+    expect(listEphemeralVmRuntimes(primaryUserDataPath)).toHaveLength(1)
+  })
+
+  it('finds an evicted completed replay binding through a profile alias', async () => {
+    const params = {
+      repoId: targetRepo.id,
+      recipeId: recipe.id,
+      clientMutationId: 'evicted-completed-alias'
+    }
+    const resolver = vi.fn().mockResolvedValue('a'.repeat(40))
+    const first = await provisionEnvironmentRecipeForRpc(dependencies(targetRepo, resolver), params)
+    rmSync(getEnvironmentRecipeOperationJournalPath(primaryUserDataPath))
+    resetEnvironmentRecipeRpcStateForTests()
+    userDataPath = aliasUserDataPath()
+
+    await expect(
+      provisionEnvironmentRecipeForRpc(dependencies(targetRepo, resolver), params)
+    ).resolves.toMatchObject({ runtimeId: first.runtimeId })
+    expect(provisionMock).toHaveBeenCalledOnce()
+    expect(resolver).toHaveBeenCalledOnce()
+    expect(listEphemeralVmRuntimes(primaryUserDataPath).map((runtime) => runtime.id)).toEqual([
+      first.runtimeId
+    ])
+  })
+
+  it.each(['prepared', 'completed'])(
+    'fails closed for a legacy %s pin without a durable runtime ID',
+    async (state) => {
+      const params = {
+        repoId: targetRepo.id,
+        recipeId: recipe.id,
+        clientMutationId: `missing-runtime-id-${state}`
+      }
+      writeFileSync(
+        getEnvironmentRecipeOperationJournalPath(primaryUserDataPath),
+        JSON.stringify({
+          version: 1,
+          entries: [
+            {
+              pairedDeviceId: 'paired-device',
+              method: 'environmentRecipes.provision',
+              clientMutationId: params.clientMutationId,
+              fingerprint: environmentRecipeMutationRequestSha256(params),
+              provisionRef: 'a'.repeat(40),
+              operatorRecipeCatalogSha256: catalog.status.digest,
+              state,
+              createdAt: 1,
+              updatedAt: 1
+            }
+          ]
+        }),
+        'utf8'
+      )
+      const listRecipes = vi.fn(() => [recipe])
+
+      await expect(
+        Promise.resolve().then(() =>
+          provisionEnvironmentRecipeForRpc(
+            {
+              ...dependencies(),
+              operatorRecipeCatalog: { ...catalog, listRecipes }
+            },
+            params
+          )
+        )
+      ).rejects.toMatchObject({ code: 'environment_recipe_failed' })
+      expect(listRecipes).not.toHaveBeenCalled()
+      expect(provisionMock).not.toHaveBeenCalled()
+      expect(connectSshMock).not.toHaveBeenCalled()
+    }
+  )
+
   it('replays the pinned ref after a side effect boundary crash and later runtime success', async () => {
     let head = 'a'.repeat(40)
     const gitExec = vi.fn(async () => ({ stdout: `${head}\n` }))
