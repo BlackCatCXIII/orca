@@ -8,6 +8,7 @@ import { defineMethod, type RpcMethod } from '../core'
 import { buildManagedWorktreeCreateArgs } from './worktree-create-args'
 import { resolveRuntimeNavigationTarget } from '../../../../shared/runtime-navigation'
 import { resolveRpcWorkspaceCreatorProvenance } from '../workspace-creator-context'
+import { adoptProvisionedRootFromRpc } from './worktree-provisioned-root-adoption'
 import {
   WorktreeCreate,
   WorktreeActivate,
@@ -80,6 +81,10 @@ export const WORKTREE_METHODS: RpcMethod[] = [
       // worktree instead of spawning a duplicate. No key (desktop/CLI) runs plainly.
       context.runtime.dedupeWorktreeCreate(params.repo, params.clientMutationId, async () => {
         const { runtime } = context
+        const provisionedRoot = adoptProvisionedRootFromRpc(runtime, params, context.userDataPath)
+        if (provisionedRoot) {
+          return provisionedRoot
+        }
         const repo = await runtime.showRepo(params.repo)
         const automationProvenance = resolveAutomationWorkspaceProvenance({
           authority: runtime,

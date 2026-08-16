@@ -10,6 +10,24 @@ function makeRequest(method: string, params?: unknown): RpcRequest {
 }
 
 describe('repo RPC methods', () => {
+  it('returns a structured failure when repo.add cannot persist', async () => {
+    const runtime = {
+      getRuntimeId: () => 'test-runtime',
+      addRepoDurably: vi.fn().mockRejectedValue(new Error('disk unavailable'))
+    } as unknown as OrcaRuntimeService
+    const dispatcher = new RpcDispatcher({ runtime, methods: REPO_METHODS })
+
+    const response = await dispatcher.dispatch(
+      makeRequest('repo.add', { path: '/srv/projects/orca', kind: 'folder' })
+    )
+
+    expect(runtime.addRepoDurably).toHaveBeenCalledWith('/srv/projects/orca', 'folder')
+    expect(response).toMatchObject({
+      ok: false,
+      error: { code: 'runtime_error', message: 'disk unavailable' }
+    })
+  })
+
   it('projects inherited visibility for old clients but preserves inheritance for capable clients', async () => {
     const runtime = {
       getRuntimeId: () => 'test-runtime',
@@ -45,7 +63,7 @@ describe('repo RPC methods', () => {
     }
     const runtime = {
       getRuntimeId: () => 'test-runtime',
-      addRepo: vi.fn().mockResolvedValue(repo),
+      addRepoDurably: vi.fn().mockResolvedValue(repo),
       getClientSettings: () => ({ worktreeVisibilityDefaults: { external: 'show' } })
     } as unknown as OrcaRuntimeService
     const dispatcher = new RpcDispatcher({ runtime, methods: REPO_METHODS })

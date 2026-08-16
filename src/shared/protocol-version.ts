@@ -90,6 +90,12 @@ export const AGENT_SESSION_OMP_RESUME_PATH_RUNTIME_CAPABILITY =
   'agent-session.omp-resume-path.v1' as const
 // Why: older runtimes strip mutation owner fields, so clients must fence writes before RPC.
 export const FILE_MUTATION_OWNERSHIP_RUNTIME_CAPABILITY = 'files.mutation-ownership.v1' as const
+// Why: capability gating keeps destructive recipe RPCs away from older paired hosts.
+export const ENVIRONMENT_RECIPE_LIFECYCLE_RUNTIME_CAPABILITY =
+  'environment-recipes.lifecycle.v1' as const
+// Why: lifecycle-only hosts expose the original five recipe methods, but not runtime discovery or provisioned-root adoption.
+export const ENVIRONMENT_RECIPE_MANAGEMENT_RUNTIME_CAPABILITY =
+  'environment-recipes.management-adoption.v1' as const
 export const FILE_MUTATION_OWNERSHIP_UPDATE_REQUIRED_MESSAGE =
   'Remote file changes require a newer Orca server. Update the HUB and try again.'
 export const WORKTREE_VISIBILITY_DEFAULTS_RUNTIME_CAPABILITY =
@@ -131,6 +137,8 @@ export const RUNTIME_CAPABILITIES = [
   AGENT_SESSION_HOST_AUTHORITY_RUNTIME_CAPABILITY,
   AGENT_SESSION_OMP_RESUME_PATH_RUNTIME_CAPABILITY,
   FILE_MUTATION_OWNERSHIP_RUNTIME_CAPABILITY,
+  ENVIRONMENT_RECIPE_LIFECYCLE_RUNTIME_CAPABILITY,
+  ENVIRONMENT_RECIPE_MANAGEMENT_RUNTIME_CAPABILITY,
   WORKTREE_VISIBILITY_DEFAULTS_RUNTIME_CAPABILITY,
   WORKTREE_VISIBILITY_SOURCE_DEFAULTS_RUNTIME_CAPABILITY,
   ACCOUNT_IMPORT_RUNTIME_CAPABILITY,

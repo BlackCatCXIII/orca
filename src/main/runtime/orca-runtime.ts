@@ -258,10 +258,12 @@ import type {
   WorktreeRemoteBranchConflictEvent
 } from '../../shared/worktree/base-ref-drift-types'
 import type {
+  AdoptProvisionedRootArgs,
   CreateWorktreeResult,
   ForceDeleteWorktreeBranchResult,
   RemoveWorktreeResult
 } from '../../shared/worktree/create-types'
+import { adoptProvisionedRootSshCheckout } from '../provisioned-root-ssh-adoption'
 import type { WorktreeStartupLaunch } from '../../shared/worktree/launch-types'
 import type {
   WorkspaceLineage,
@@ -2940,6 +2942,13 @@ export class OrcaRuntimeService {
   private worktreeScanInFlight = new Map<string, RuntimeWorktreeScanInFlight>()
   /** Repos whose Git-admin probe has not settled yet; caps abandoned fs work at one per repo. */
   private worktreeAdminFingerprintProbes = new Set<string>()
+  // Why: concurrent repo.add RPCs must share detection, mutation, preparation, and durable flush.
+  private durableRepoAddByScope = new Map<
+    string,
+    { kind: 'git' | 'folder'; promise: Promise<Repo> }
+  >()
+  // Why: host-unaware and host-specific scopes overlap the same repo list and must re-check it in order.
+  private durableRepoAddTailByPath = new Map<string, Promise<void>>()
   private cloneInFlightByPath = new Map<string, Promise<void>>()
   private agentDetector: AgentDetector | null = null
   private ptyForegroundAgentRefreshes = new Map<string, PtyForegroundAgentRefresh>()
@@ -19217,8 +19226,11 @@ export class OrcaRuntimeService {
         parseExecutionHostId(executionHostId)?.kind === 'runtime'
       ) {
         const adopted =
-          this.store.updateRepo(existing.id, { executionHostId }) ??
-          ({ ...existing, executionHostId } as Repo)
+          this.store.updateRepo(
+            existing.id,
+            { executionHostId },
+            getRepoExecutionHostId(existing)
+          ) ?? ({ ...existing, executionHostId } as Repo)
         this.invalidateResolvedWorktreeCache()
         this.invalidateWorktreeScanCacheForRepo(existing.id)
         this.notifyReposChanged()
@@ -19245,6 +19257,66 @@ export class OrcaRuntimeService {
     this.invalidateWorktreeScanCacheForRepo(repo.id)
     this.notifyReposChanged()
     return this.store.getRepo(repo.id) ?? repo
+  }
+
+  addRepoDurably(
+    path: string,
+    kind: 'git' | 'folder' = 'git',
+    executionHostId?: ExecutionHostId | null
+  ): Promise<Repo> {
+    const pathKey = normalizeRuntimePathForComparison(path)
+    const targetHostKey =
+      executionHostId == null
+        ? 'host-unaware'
+        : (parseExecutionHostId(executionHostId)?.id ?? executionHostId)
+    const scopeKey = `${pathKey}\0${targetHostKey}`
+    const existing = this.durableRepoAddByScope.get(scopeKey)
+    if (existing) {
+      if (existing.kind !== kind) {
+        return Promise.reject(
+          new Error(`Project path is already being added as ${existing.kind}: ${path}`)
+        )
+      }
+      return existing.promise
+    }
+
+    const previous = this.durableRepoAddTailByPath.get(pathKey) ?? Promise.resolve()
+    const promise = previous.then(() => this.addRepoAndFlush(path, kind, executionHostId))
+    const tail = promise.then(
+      () => {},
+      () => {}
+    )
+    const entry = { kind, promise }
+    this.durableRepoAddByScope.set(scopeKey, entry)
+    this.durableRepoAddTailByPath.set(pathKey, tail)
+    const clear = (): void => {
+      if (this.durableRepoAddByScope.get(scopeKey) === entry) {
+        this.durableRepoAddByScope.delete(scopeKey)
+      }
+    }
+    void promise.then(clear, clear)
+    void tail.then(() => {
+      if (this.durableRepoAddTailByPath.get(pathKey) === tail) {
+        this.durableRepoAddTailByPath.delete(pathKey)
+      }
+    })
+    return promise
+  }
+
+  private async addRepoAndFlush(
+    path: string,
+    kind: 'git' | 'folder',
+    executionHostId?: ExecutionHostId | null
+  ): Promise<Repo> {
+    const repo = await this.addRepo(path, kind, executionHostId)
+    if (this.store?.flushPendingOrThrowAsync) {
+      await this.store.flushPendingOrThrowAsync()
+    } else if (this.store?.flushOrThrow) {
+      this.store.flushOrThrow()
+    } else {
+      throw new Error('repo_persistence_unavailable')
+    }
+    return repo
   }
 
   async createRepo(
@@ -23446,6 +23518,66 @@ export class OrcaRuntimeService {
           }
         : {})
     }
+  }
+
+  async adoptManagedProvisionedRoot(args: {
+    repoId: string
+    userDataPath: string
+    request: AdoptProvisionedRootArgs
+    activate: boolean
+  }): Promise<CreateWorktreeResult> {
+    if (!this.store) {
+      throw new Error('runtime_unavailable')
+    }
+    const matches = this.store
+      .getRepos()
+      .filter(
+        (repo) =>
+          repo.id === args.repoId &&
+          getRepoExecutionHostId(repo) === args.request.executionHostId &&
+          !isFolderRepo(repo)
+      )
+    if (matches.length !== 1) {
+      throw new Error('Provisioned-root repository ownership is missing or ambiguous.')
+    }
+    const repo = matches[0]!
+    const isRepoCurrent = (): boolean => {
+      const current = this.store
+        ?.getRepos()
+        .filter(
+          (candidate) =>
+            candidate.id === repo.id &&
+            getRepoExecutionHostId(candidate) === args.request.executionHostId &&
+            !isFolderRepo(candidate)
+        )
+      return (
+        current?.length === 1 &&
+        current[0]?.path === repo.path &&
+        (current[0]?.connectionId ?? null) === (repo.connectionId ?? null)
+      )
+    }
+    const adoption = await adoptProvisionedRootSshCheckout({
+      userDataPath: args.userDataPath,
+      request: args.request,
+      repo,
+      store: this.requireStore(),
+      isRepoCurrent
+    })
+    const { result } = adoption
+    if (adoption.created) {
+      this.invalidateResolvedWorktreeCache()
+      this.notifyWorktreesChanged(repo.id)
+      this.emitWorktreeLifecycle({
+        kind: 'created',
+        worktreeId: result.worktree.id,
+        path: result.worktree.path,
+        branch: result.worktree.branch
+      })
+    }
+    if (args.activate) {
+      this.notifyActivateWorktree(repo.id, result.worktree.id)
+    }
+    return result
   }
 
   private async createManagedRemoteWorktree(

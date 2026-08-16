@@ -22,7 +22,8 @@ describe('getProvisionedRootResumeIntegrityError', () => {
     ['identity agent', { identityAgent: '/agents/other' }],
     ['identities-only setting', { identitiesOnly: true }],
     ['proxy command', { proxyCommand: 'ssh proxy' }],
-    ['jump host', { jumpHost: 'bastion' }]
+    ['jump host', { jumpHost: 'bastion' }],
+    ['host key', { hostKey: { type: 'sha256' as const, fingerprint: `SHA256:${'B'.repeat(43)}` } }]
   ])('rejects changed SSH %s ownership', (_label, target) => {
     expect(
       getProvisionedRootResumeIntegrityError(provisionedSshResult(), provisionedSshResult(target))
@@ -60,7 +61,8 @@ function provisionedSshResult(target: Partial<RecipeSshTarget> = {}): EphemeralV
         username: 'orca',
         identityFile: '/keys/orca',
         identityAgent: '/agents/orca',
-        ...target
+        ...target,
+        hostKey: target.hostKey ?? { type: 'sha256', fingerprint: `SHA256:${'A'.repeat(43)}` }
       }
     }
   }

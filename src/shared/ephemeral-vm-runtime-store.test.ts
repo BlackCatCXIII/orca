@@ -1,11 +1,163 @@
-import { mkdtempSync, rmSync, truncateSync, writeFileSync } from 'node:fs'
+import {
+  mkdirSync,
+  linkSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  truncateSync,
+  writeFileSync
+} from 'node:fs'
+import type * as NodeFs from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type * as BoundedFileReader from './node-bounded-file-reader'
+import type * as SecureFileFilesystem from './secure-file-filesystem'
+
+const filesystemFailure = vi.hoisted(() => ({
+  stage: null as 'temp-fsync' | 'rename' | 'parent-dir-fsync' | 'authority-file-fsync' | null,
+  swapTargetPath: null as string | null,
+  swapReplacementPath: null as string | null,
+  swapTargetMode: null as 'replacement' | 'symlink' | null,
+  rewriteTargetPath: null as string | null,
+  rewriteContents: null as string | null,
+  swapParentPath: null as string | null,
+  swapParentMovedPath: null as string | null,
+  swapParentTargetPath: null as string | null,
+  swapParentMode: null as 'directory' | 'symlink' | null,
+  finalReadSwapArmed: false,
+  finalReadSwapParentPath: null as string | null,
+  finalReadSwapParentMovedPath: null as string | null,
+  finalReadReplacementParentPath: null as string | null
+}))
+
+vi.mock('./node-bounded-file-reader', async (importOriginal) => {
+  const actual = await importOriginal<typeof BoundedFileReader>()
+  const nodeFs = await vi.importActual<typeof NodeFs>('node:fs')
+  return {
+    ...actual,
+    readNodeFileDescriptorSyncWithinLimit(descriptor: number, maxBytes: number) {
+      if (
+        filesystemFailure.finalReadSwapArmed &&
+        filesystemFailure.finalReadSwapParentPath &&
+        filesystemFailure.finalReadSwapParentMovedPath &&
+        filesystemFailure.finalReadReplacementParentPath
+      ) {
+        nodeFs.renameSync(
+          filesystemFailure.finalReadSwapParentPath,
+          filesystemFailure.finalReadSwapParentMovedPath
+        )
+        nodeFs.renameSync(
+          filesystemFailure.finalReadReplacementParentPath,
+          filesystemFailure.finalReadSwapParentPath
+        )
+        filesystemFailure.finalReadSwapArmed = false
+      }
+      return actual.readNodeFileDescriptorSyncWithinLimit(descriptor, maxBytes)
+    }
+  }
+})
+
+vi.mock('./secure-file-filesystem', async (importOriginal) => {
+  const actual = await importOriginal<typeof SecureFileFilesystem>()
+  const nodeFs = await vi.importActual<typeof NodeFs>('node:fs')
+  return {
+    ...actual,
+    fsyncSecurePathSync(path: string, flags: 'r' | 'r+'): void {
+      const stage = nodeFs.statSync(path).isDirectory() ? 'parent-dir-fsync' : 'temp-fsync'
+      if (filesystemFailure.stage === stage) {
+        throw Object.assign(new Error(`injected ${stage}`), {
+          code: stage === 'parent-dir-fsync' ? 'EINVAL' : 'EIO'
+        })
+      }
+      actual.fsyncSecurePathSync(path, flags)
+    },
+    renameSecureFileSync(sourcePath: string, targetPath: string): void {
+      if (filesystemFailure.stage === 'rename') {
+        throw Object.assign(new Error('injected rename'), { code: 'EIO' })
+      }
+      actual.renameSecureFileSync(sourcePath, targetPath)
+    },
+    fsyncSecureFileDescriptorSync(descriptor: number): void {
+      if (filesystemFailure.stage === 'authority-file-fsync') {
+        throw Object.assign(new Error('injected authority file fsync'), { code: 'EIO' })
+      }
+      if (
+        filesystemFailure.swapTargetPath &&
+        filesystemFailure.swapReplacementPath &&
+        filesystemFailure.swapTargetMode
+      ) {
+        if (filesystemFailure.swapTargetMode === 'replacement') {
+          nodeFs.renameSync(filesystemFailure.swapReplacementPath, filesystemFailure.swapTargetPath)
+        } else {
+          nodeFs.renameSync(filesystemFailure.swapTargetPath, filesystemFailure.swapReplacementPath)
+          nodeFs.symlinkSync(
+            filesystemFailure.swapReplacementPath,
+            filesystemFailure.swapTargetPath
+          )
+        }
+        filesystemFailure.swapTargetPath = null
+        filesystemFailure.swapReplacementPath = null
+        filesystemFailure.swapTargetMode = null
+      }
+      if (filesystemFailure.rewriteTargetPath && filesystemFailure.rewriteContents) {
+        nodeFs.writeFileSync(
+          filesystemFailure.rewriteTargetPath,
+          filesystemFailure.rewriteContents,
+          'utf8'
+        )
+        filesystemFailure.rewriteTargetPath = null
+        filesystemFailure.rewriteContents = null
+      }
+      actual.fsyncSecureFileDescriptorSync(descriptor)
+    },
+    fsyncSecureDirectoryDescriptorSync(descriptor: number): void {
+      if (filesystemFailure.stage === 'parent-dir-fsync') {
+        throw Object.assign(new Error('injected parent-dir-fsync'), { code: 'EINVAL' })
+      }
+      if (
+        filesystemFailure.swapParentPath &&
+        filesystemFailure.swapParentMovedPath &&
+        filesystemFailure.swapParentTargetPath &&
+        filesystemFailure.swapParentMode
+      ) {
+        const parentPath = filesystemFailure.swapParentPath
+        const movedPath = filesystemFailure.swapParentMovedPath
+        const targetPath = filesystemFailure.swapParentTargetPath
+        const mode = filesystemFailure.swapParentMode
+        nodeFs.renameSync(parentPath, movedPath)
+        if (mode === 'directory') {
+          nodeFs.mkdirSync(parentPath)
+          nodeFs.linkSync(
+            nodeFs.realpathSync(targetPath.replace(parentPath, movedPath)),
+            targetPath
+          )
+        } else {
+          nodeFs.symlinkSync(movedPath, parentPath, 'dir')
+        }
+        filesystemFailure.swapParentPath = null
+        filesystemFailure.swapParentMovedPath = null
+        filesystemFailure.swapParentTargetPath = null
+        filesystemFailure.swapParentMode = null
+      }
+      actual.fsyncSecureDirectoryDescriptorSync(descriptor)
+      if (
+        filesystemFailure.finalReadSwapParentPath &&
+        filesystemFailure.finalReadSwapParentMovedPath &&
+        filesystemFailure.finalReadReplacementParentPath
+      ) {
+        filesystemFailure.finalReadSwapArmed = true
+      }
+    }
+  }
+})
 import { encodePairingOffer, PAIRING_OFFER_VERSION } from './pairing'
 import {
   EphemeralVmRuntimeStoreError,
   getEphemeralVmRuntimeStorePath,
+  listAuthoritativeEphemeralVmRuntimes,
   listEphemeralVmRuntimes,
   MAX_EPHEMERAL_VM_RUNTIME_STORE_FILE_BYTES,
   removeEphemeralVmRuntime,
@@ -13,6 +165,8 @@ import {
   upsertEphemeralVmRuntime
 } from './ephemeral-vm-runtime-store'
 import type { EphemeralVmRuntimeRecord } from './ephemeral-vm-runtimes'
+
+const posixIt = process.platform === 'win32' ? it.skip : it
 
 function pairingCode(endpoint = 'wss://sandbox.example.com'): string {
   return encodePairingOffer({
@@ -46,6 +200,17 @@ function runtimeRecord(
   }
 }
 
+function corruptPersistedJsonField(path: string, value: string): void {
+  const bytes = readFileSync(path)
+  const offset = bytes.indexOf(value)
+  if (offset === -1) {
+    throw new Error(`Persisted field not found: ${value}`)
+  }
+  bytes[offset] = 0xc3
+  bytes[offset + 1] = 0x28
+  writeFileSync(path, bytes)
+}
+
 describe('ephemeral VM runtime store', () => {
   const tempDirs: string[] = []
   const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')
@@ -56,6 +221,20 @@ describe('ephemeral VM runtime store', () => {
   })
 
   afterEach(() => {
+    filesystemFailure.stage = null
+    filesystemFailure.swapTargetPath = null
+    filesystemFailure.swapReplacementPath = null
+    filesystemFailure.swapTargetMode = null
+    filesystemFailure.rewriteTargetPath = null
+    filesystemFailure.rewriteContents = null
+    filesystemFailure.swapParentPath = null
+    filesystemFailure.swapParentMovedPath = null
+    filesystemFailure.swapParentTargetPath = null
+    filesystemFailure.swapParentMode = null
+    filesystemFailure.finalReadSwapArmed = false
+    filesystemFailure.finalReadSwapParentPath = null
+    filesystemFailure.finalReadSwapParentMovedPath = null
+    filesystemFailure.finalReadReplacementParentPath = null
     if (originalPlatform) {
       Object.defineProperty(process, 'platform', originalPlatform)
     }
@@ -175,6 +354,54 @@ describe('ephemeral VM runtime store', () => {
     expect(() => listEphemeralVmRuntimes(userDataPath)).toThrow(EphemeralVmRuntimeStoreError)
   })
 
+  it('rejects malformed UTF-8 in a persisted provision binding', () => {
+    const userDataPath = makeUserDataPath()
+    const resolvedRef = 'a'.repeat(40)
+    upsertEphemeralVmRuntime(
+      userDataPath,
+      runtimeRecord({
+        provisionMutation: { requestSha256: 'f'.repeat(64), resolvedRef }
+      })
+    )
+    corruptPersistedJsonField(getEphemeralVmRuntimeStorePath(userDataPath), resolvedRef)
+
+    expect(() => listEphemeralVmRuntimes(userDataPath)).toThrow(EphemeralVmRuntimeStoreError)
+  })
+
+  it('rejects duplicate JSON keys in a persisted provision binding', () => {
+    const userDataPath = makeUserDataPath()
+    const resolvedRef = 'a'.repeat(40)
+    upsertEphemeralVmRuntime(
+      userDataPath,
+      runtimeRecord({
+        provisionMutation: { requestSha256: 'f'.repeat(64), resolvedRef }
+      })
+    )
+    const path = getEphemeralVmRuntimeStorePath(userDataPath)
+    const source = readFileSync(path, 'utf8').replace(
+      `"resolvedRef":"${resolvedRef}"`,
+      `"resolvedRef":"${resolvedRef}","resolvedRef":"${resolvedRef}"`
+    )
+    writeFileSync(path, source, 'utf8')
+
+    expect(() => listEphemeralVmRuntimes(userDataPath)).toThrow(EphemeralVmRuntimeStoreError)
+  })
+
+  it('rejects duplicate persisted runtime IDs', () => {
+    const userDataPath = makeUserDataPath()
+    const runtime = runtimeRecord()
+    writeFileSync(
+      getEphemeralVmRuntimeStorePath(userDataPath),
+      JSON.stringify({
+        version: 1,
+        runtimes: [runtime, { ...runtime, workspaceName: 'Conflicting duplicate' }]
+      }),
+      'utf8'
+    )
+
+    expect(() => listEphemeralVmRuntimes(userDataPath)).toThrow(EphemeralVmRuntimeStoreError)
+  })
+
   it('rejects an oversized sparse runtime store before parsing it', () => {
     const userDataPath = makeUserDataPath()
     const path = getEphemeralVmRuntimeStorePath(userDataPath)
@@ -196,5 +423,304 @@ describe('ephemeral VM runtime store', () => {
       )
     ).toThrow(EphemeralVmRuntimeStoreError)
     expect(listEphemeralVmRuntimes(userDataPath)).toEqual([])
+  })
+
+  it('keeps genuinely missing runtime stores empty', () => {
+    const userDataPath = makeUserDataPath()
+
+    expect(listEphemeralVmRuntimes(userDataPath)).toEqual([])
+    expect(listAuthoritativeEphemeralVmRuntimes(userDataPath)).toEqual([])
+  })
+
+  it('keeps local-only runtime stores on best-effort durability', () => {
+    const userDataPath = makeUserDataPath()
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
+
+    expect(() => upsertEphemeralVmRuntime(userDataPath, runtimeRecord())).not.toThrow()
+    expect(listEphemeralVmRuntimes(userDataPath)).toHaveLength(1)
+    filesystemFailure.stage = 'authority-file-fsync'
+    expect(listAuthoritativeEphemeralVmRuntimes(userDataPath)).toHaveLength(1)
+  })
+
+  it('requires critical durability to publish or remove operator runtimes', () => {
+    const userDataPath = makeUserDataPath()
+    const operatorRuntime = runtimeRecord({
+      operatorRecipeCatalogSha256: 'c'.repeat(64),
+      provisionMutation: { requestSha256: 'f'.repeat(64), resolvedRef: 'a'.repeat(40) }
+    })
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
+
+    expect(() => upsertEphemeralVmRuntime(userDataPath, operatorRuntime)).toThrow(
+      'Critical secure-file durability is unavailable on Windows.'
+    )
+    expect(listEphemeralVmRuntimes(userDataPath)).toEqual([])
+
+    writeFileSync(
+      getEphemeralVmRuntimeStorePath(userDataPath),
+      JSON.stringify({ version: 1, runtimes: [operatorRuntime] })
+    )
+    expect(() =>
+      upsertEphemeralVmRuntime(userDataPath, runtimeRecord({ id: 'local-runtime' }))
+    ).toThrow('Critical secure-file durability is unavailable on Windows.')
+    expect(() => removeEphemeralVmRuntime(userDataPath, operatorRuntime.id)).toThrow(
+      'Critical secure-file durability is unavailable on Windows.'
+    )
+    expect(listEphemeralVmRuntimes(userDataPath)).toEqual([operatorRuntime])
+    expect(() => listAuthoritativeEphemeralVmRuntimes(userDataPath)).toThrow(
+      EphemeralVmRuntimeStoreError
+    )
+  })
+
+  posixIt('propagates unsupported operator parent-directory durability', () => {
+    const userDataPath = makeUserDataPath()
+    filesystemFailure.stage = 'parent-dir-fsync'
+
+    expect(() =>
+      upsertEphemeralVmRuntime(
+        userDataPath,
+        runtimeRecord({ operatorRecipeCatalogSha256: 'c'.repeat(64) })
+      )
+    ).toThrow(expect.objectContaining({ code: 'EINVAL' }))
+  })
+
+  posixIt.each(['running', 'cleaned', 'cleanup_failed'] as const)(
+    'requires successful file and parent re-durabilization before %s operator authority',
+    (status) => {
+      const userDataPath = makeUserDataPath()
+      const operatorRuntime = runtimeRecord({
+        operatorRecipeCatalogSha256: 'c'.repeat(64),
+        provisionMutation: { requestSha256: 'f'.repeat(64), resolvedRef: 'a'.repeat(40) },
+        status,
+        cleanupStatus:
+          status === 'cleaned'
+            ? 'succeeded'
+            : status === 'cleanup_failed'
+              ? 'failed'
+              : 'not_started'
+      })
+      filesystemFailure.stage = 'parent-dir-fsync'
+      expect(() => upsertEphemeralVmRuntime(userDataPath, operatorRuntime)).toThrow()
+      expect(listEphemeralVmRuntimes(userDataPath)).toEqual([operatorRuntime])
+      expect(() => listAuthoritativeEphemeralVmRuntimes(userDataPath)).toThrow(
+        EphemeralVmRuntimeStoreError
+      )
+
+      filesystemFailure.stage = 'authority-file-fsync'
+      expect(() => listAuthoritativeEphemeralVmRuntimes(userDataPath)).toThrow(
+        EphemeralVmRuntimeStoreError
+      )
+
+      filesystemFailure.stage = null
+      expect(listAuthoritativeEphemeralVmRuntimes(userDataPath)).toEqual([operatorRuntime])
+    }
+  )
+
+  posixIt('rejects a path swap between operator observation and descriptor fsync', () => {
+    const userDataPath = makeUserDataPath()
+    const operatorRuntime = runtimeRecord({
+      operatorRecipeCatalogSha256: 'c'.repeat(64),
+      provisionMutation: { requestSha256: 'f'.repeat(64), resolvedRef: 'a'.repeat(40) }
+    })
+    upsertEphemeralVmRuntime(userDataPath, operatorRuntime)
+    const targetPath = getEphemeralVmRuntimeStorePath(userDataPath)
+    const replacementPath = join(userDataPath, 'replacement-runtime-store.json')
+    const replacementRuntime = runtimeRecord({ id: 'replacement-runtime' })
+    writeFileSync(
+      replacementPath,
+      JSON.stringify({ version: 1, runtimes: [replacementRuntime] }),
+      'utf8'
+    )
+    filesystemFailure.swapTargetPath = targetPath
+    filesystemFailure.swapReplacementPath = replacementPath
+    filesystemFailure.swapTargetMode = 'replacement'
+
+    expect(() => listAuthoritativeEphemeralVmRuntimes(userDataPath)).toThrow(
+      EphemeralVmRuntimeStoreError
+    )
+    expect(listEphemeralVmRuntimes(userDataPath)).toEqual([replacementRuntime])
+  })
+
+  posixIt('rejects a symbolic-link runtime-store target', () => {
+    const userDataPath = makeUserDataPath()
+    const operatorRuntime = runtimeRecord({
+      operatorRecipeCatalogSha256: 'c'.repeat(64),
+      provisionMutation: { requestSha256: 'f'.repeat(64), resolvedRef: 'a'.repeat(40) }
+    })
+    upsertEphemeralVmRuntime(userDataPath, operatorRuntime)
+    const targetPath = getEphemeralVmRuntimeStorePath(userDataPath)
+    const backingPath = join(userDataPath, 'runtime-store-backing.json')
+    renameSync(targetPath, backingPath)
+    symlinkSync(backingPath, targetPath)
+
+    expect(() => listAuthoritativeEphemeralVmRuntimes(userDataPath)).toThrow(
+      EphemeralVmRuntimeStoreError
+    )
+  })
+
+  posixIt('rejects a dangling symbolic-link runtime-store target', () => {
+    const userDataPath = makeUserDataPath()
+    const targetPath = getEphemeralVmRuntimeStorePath(userDataPath)
+    symlinkSync(join(userDataPath, 'missing-runtime-store.json'), targetPath)
+
+    expect(listEphemeralVmRuntimes(userDataPath)).toEqual([])
+    expect(() => listAuthoritativeEphemeralVmRuntimes(userDataPath)).toThrow(
+      EphemeralVmRuntimeStoreError
+    )
+  })
+
+  posixIt('rejects a non-directory authoritative store parent', () => {
+    const userDataPath = makeUserDataPath()
+    const nonDirectory = join(userDataPath, 'not-a-directory')
+    writeFileSync(nonDirectory, 'blocked', 'utf8')
+    const nestedUserDataPath = join(nonDirectory, 'profile')
+
+    expect(listEphemeralVmRuntimes(nestedUserDataPath)).toEqual([])
+    expect(() => listAuthoritativeEphemeralVmRuntimes(nestedUserDataPath)).toThrow(
+      EphemeralVmRuntimeStoreError
+    )
+  })
+
+  posixIt('rejects a final-target symlink introduced after descriptor observation', () => {
+    const userDataPath = makeUserDataPath()
+    const operatorRuntime = runtimeRecord({
+      operatorRecipeCatalogSha256: 'c'.repeat(64),
+      provisionMutation: { requestSha256: 'f'.repeat(64), resolvedRef: 'a'.repeat(40) }
+    })
+    upsertEphemeralVmRuntime(userDataPath, operatorRuntime)
+    const targetPath = getEphemeralVmRuntimeStorePath(userDataPath)
+    filesystemFailure.swapTargetPath = targetPath
+    filesystemFailure.swapReplacementPath = join(userDataPath, 'observed-runtime-store.json')
+    filesystemFailure.swapTargetMode = 'symlink'
+
+    expect(() => listAuthoritativeEphemeralVmRuntimes(userDataPath)).toThrow(
+      EphemeralVmRuntimeStoreError
+    )
+    expect(listEphemeralVmRuntimes(userDataPath)).toEqual([operatorRuntime])
+  })
+
+  posixIt('rejects a non-regular runtime-store target before opening it', () => {
+    const userDataPath = makeUserDataPath()
+    const targetPath = getEphemeralVmRuntimeStorePath(userDataPath)
+    mkdirSync(targetPath)
+
+    expect(() => listAuthoritativeEphemeralVmRuntimes(userDataPath)).toThrow(
+      EphemeralVmRuntimeStoreError
+    )
+  })
+
+  posixIt.each(['directory', 'symlink'] as const)(
+    'rejects a parent %s replacement across directory fsync',
+    (mode) => {
+      const outerPath = makeUserDataPath()
+      const userDataPath = join(outerPath, 'profile')
+      mkdirSync(userDataPath)
+      const operatorRuntime = runtimeRecord({
+        operatorRecipeCatalogSha256: 'c'.repeat(64),
+        provisionMutation: { requestSha256: 'f'.repeat(64), resolvedRef: 'a'.repeat(40) }
+      })
+      upsertEphemeralVmRuntime(userDataPath, operatorRuntime)
+      filesystemFailure.swapParentPath = userDataPath
+      filesystemFailure.swapParentMovedPath = join(outerPath, 'profile-observed')
+      filesystemFailure.swapParentTargetPath = getEphemeralVmRuntimeStorePath(userDataPath)
+      filesystemFailure.swapParentMode = mode
+
+      expect(() => listAuthoritativeEphemeralVmRuntimes(userDataPath)).toThrow(
+        EphemeralVmRuntimeStoreError
+      )
+    }
+  )
+
+  posixIt('rejects a same-target parent replacement during the final file reread', () => {
+    const outerPath = makeUserDataPath()
+    const userDataPath = join(outerPath, 'profile')
+    const replacementParentPath = join(outerPath, 'profile-replacement')
+    mkdirSync(userDataPath)
+    mkdirSync(replacementParentPath)
+    const operatorRuntime = runtimeRecord({
+      operatorRecipeCatalogSha256: 'c'.repeat(64),
+      provisionMutation: { requestSha256: 'f'.repeat(64), resolvedRef: 'a'.repeat(40) }
+    })
+    upsertEphemeralVmRuntime(userDataPath, operatorRuntime)
+    const targetPath = getEphemeralVmRuntimeStorePath(userDataPath)
+    linkSync(targetPath, getEphemeralVmRuntimeStorePath(replacementParentPath))
+    filesystemFailure.finalReadSwapParentPath = userDataPath
+    filesystemFailure.finalReadSwapParentMovedPath = join(outerPath, 'profile-observed')
+    filesystemFailure.finalReadReplacementParentPath = replacementParentPath
+
+    expect(() => listAuthoritativeEphemeralVmRuntimes(userDataPath)).toThrow(
+      EphemeralVmRuntimeStoreError
+    )
+  })
+
+  posixIt('rejects same-inode byte changes while establishing operator authority', () => {
+    const userDataPath = makeUserDataPath()
+    const operatorRuntime = runtimeRecord({
+      operatorRecipeCatalogSha256: 'c'.repeat(64),
+      provisionMutation: { requestSha256: 'f'.repeat(64), resolvedRef: 'a'.repeat(40) }
+    })
+    upsertEphemeralVmRuntime(userDataPath, operatorRuntime)
+    const targetPath = getEphemeralVmRuntimeStorePath(userDataPath)
+    const replacementRuntime = runtimeRecord({
+      id: 'rewritten-runtime',
+      operatorRecipeCatalogSha256: 'c'.repeat(64),
+      provisionMutation: { requestSha256: 'e'.repeat(64), resolvedRef: 'b'.repeat(40) }
+    })
+    filesystemFailure.rewriteTargetPath = targetPath
+    filesystemFailure.rewriteContents = JSON.stringify({
+      version: 1,
+      runtimes: [replacementRuntime]
+    })
+
+    expect(() => listAuthoritativeEphemeralVmRuntimes(userDataPath)).toThrow(
+      EphemeralVmRuntimeStoreError
+    )
+    expect(listEphemeralVmRuntimes(userDataPath)).toEqual([replacementRuntime])
+  })
+
+  it.each([
+    ['catalog removal', { operatorRecipeCatalogSha256: undefined }],
+    ['catalog drift', { operatorRecipeCatalogSha256: 'd'.repeat(64) }],
+    ['provision binding removal', { provisionMutation: undefined }],
+    [
+      'request binding drift',
+      { provisionMutation: { requestSha256: 'e'.repeat(64), resolvedRef: 'a'.repeat(40) } }
+    ],
+    [
+      'resolved ref drift',
+      { provisionMutation: { requestSha256: 'f'.repeat(64), resolvedRef: 'b'.repeat(40) } }
+    ]
+  ])('rejects same-ID operator %s', (_name, bindingOverride) => {
+    const userDataPath = makeUserDataPath()
+    const operatorRuntime = runtimeRecord({
+      operatorRecipeCatalogSha256: 'c'.repeat(64),
+      provisionMutation: { requestSha256: 'f'.repeat(64), resolvedRef: 'a'.repeat(40) }
+    })
+    upsertEphemeralVmRuntime(userDataPath, operatorRuntime)
+
+    expect(() =>
+      upsertEphemeralVmRuntime(userDataPath, {
+        ...operatorRuntime,
+        ...bindingOverride,
+        status: 'suspended',
+        updatedAt: 2_000
+      })
+    ).toThrow(expect.objectContaining({ code: 'invalid_argument' }))
+    expect(listEphemeralVmRuntimes(userDataPath)).toEqual([operatorRuntime])
+  })
+
+  it('allows identical operator binding replay and ordinary nonoperator replacement', () => {
+    const userDataPath = makeUserDataPath()
+    const operatorRuntime = runtimeRecord({
+      operatorRecipeCatalogSha256: 'c'.repeat(64),
+      provisionMutation: { requestSha256: 'f'.repeat(64), resolvedRef: 'a'.repeat(40) }
+    })
+    upsertEphemeralVmRuntime(userDataPath, operatorRuntime)
+    const updatedOperator = { ...operatorRuntime, status: 'suspended' as const, updatedAt: 2_000 }
+    expect(upsertEphemeralVmRuntime(userDataPath, updatedOperator)).toEqual(updatedOperator)
+
+    const localPath = makeUserDataPath()
+    upsertEphemeralVmRuntime(localPath, runtimeRecord())
+    const replacedLocal = runtimeRecord({ status: 'suspended', updatedAt: 2_000 })
+    expect(upsertEphemeralVmRuntime(localPath, replacedLocal)).toEqual(replacedLocal)
   })
 })

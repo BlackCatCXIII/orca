@@ -129,7 +129,8 @@ describe('prepareEphemeralVmWorkspaceTarget', () => {
               label: 'Sandbox',
               host: 'sandbox.example.com',
               port: 22,
-              username: 'root'
+              username: 'root',
+              hostKey: { type: 'sha256', fingerprint: `SHA256:${'A'.repeat(43)}` }
             }
           }
         }

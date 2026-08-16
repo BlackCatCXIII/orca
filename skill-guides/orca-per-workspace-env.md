@@ -43,7 +43,8 @@ output shape and half the templates.
 Keep Orca's checkout behavior unchanged by default: omit `checkoutMode`, emit schema version 1, and
 let Orca create a linked worktree. Only use `checkoutMode: provisioned-root` when the user explicitly
 wants one ephemeral machine to clone the finished workspace itself. This niche mode currently requires
-direct SSH, an ordinary non-bare/non-sparse primary checkout at `projectRoot`, and schema version 2.
+direct SSH, an ordinary non-bare/non-sparse primary checkout at `projectRoot`, schema version 2, and a
+recipe-supplied SSH server host-key pin.
 
 **Quick-start (happy path):** interview the user (connection mode Orca-server vs SSH, provider, agent CLI,
 git auth — §1.2) + read the provider's CLI docs → scaffold `scripts/orca-vm/` from §7 → run the
@@ -76,7 +77,7 @@ a long time, or need the user at the keyboard. Never create an Orca workspace or
    - **Coding-agent CLI + account:** which agent runs in the VM (`codex`, `claude`, …) and that the user
      has an account for it — it gets logged in during the Phase-3 auth snapshot (§4).
    - **Git auth:** the token source for cloning a private repo (`GH_TOKEN`/`GITHUB_TOKEN` or `gh auth
-     token`; §5).
+token`; §5).
 3. **Check prerequisites (§2)** — detect the provider CLI + auth and confirm the items above are in
    place before any paid step.
 4. **Scaffold scripts + state file** from §7 (worked Vercel example: §7f; SSH host: §7g; Docker SSH:
@@ -221,9 +222,9 @@ reserve stdout for the final JSON and log progress to stderr. Include a shared `
 
 - **Local-side** (`create`/`suspend`/`resume`/`destroy` + the base-snapshot/auth scripts the user
   invokes) runs **on the user's desktop**, so it must run on their OS. macOS/Linux: `#!/usr/bin/env
-  bash`, `set -euo pipefail`, quoted paths. **Windows:** a bare `.sh` won't run — scaffold `.ps1`/`.cmd`
+bash`, `set -euo pipefail`, quoted paths. **Windows:** a bare `.sh` won't run — scaffold `.ps1`/`.cmd`
   or require WSL/Git-Bash and point `orca.yaml` at the right launcher.
-- **Remote-side** (commands you `exec` *inside* the Linux VM) always runs in the VM's Linux shell, so
+- **Remote-side** (commands you `exec` _inside_ the Linux VM) always runs in the VM's Linux shell, so
   bash is fine there regardless of the user's OS.
 
 ### 7a. Base-snapshot (`<provider>-base-snapshot.sh`) — Phase 2
@@ -303,7 +304,11 @@ There is **no `--host` flag**. `--project-root` must be an absolute directory on
 keeps serving:
 
 ```json
-{ "schemaVersion": 1, "pairingCode": "<orca pairing URL>", "projectRoot": "<the --project-root you passed>" }
+{
+  "schemaVersion": 1,
+  "pairingCode": "<orca pairing URL>",
+  "projectRoot": "<the --project-root you passed>"
+}
 ```
 
 `pairingCode` is the pairing URL, already pointing at whatever you passed as `--pairing-address` — so set
@@ -491,18 +496,49 @@ git checkout -B "$ORCA_REPO_BRANCH" "$ORCA_REPO_REF_HEAD"
   "connection": {
     "type": "ssh",
     "projectRoot": "/abs/repo",
-    "target": { "label": "my-box", "host": "192.0.2.10", "port": 22, "username": "ubuntu" }
+    "target": {
+      "label": "my-box",
+      "host": "192.0.2.10",
+      "port": 22,
+      "username": "ubuntu",
+      "hostKey": { "type": "sha256", "fingerprint": "SHA256:<OpenSSH base64 digest>" }
+    }
   }
 }
 ```
 
-Fail if the requested schema is not `2`; do not silently fall back to the ordinary recipe shape.
+`hostKey` is mandatory for schema-v2 SSH. Emit either the OpenSSH SHA256 fingerprint shown above or
+an exact public key without its comment:
 
-**Networking → which `target` fields to set** (how *your desktop* reaches the box — there is no
+```json
+{ "type": "public-key", "publicKey": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA..." }
+```
+
+Obtain the value from the provider's authenticated control plane, VM console, or an image-owned host
+public-key file — not from an unauthenticated `ssh-keyscan` of the endpoint Orca is about to trust.
+For a public-key file, `ssh-keygen -lf <host-key>.pub -E sha256` prints the fingerprint and the first
+two fields of the `.pub` file are the exact public-key form. Orca validates the pin's syntax and key
+algorithm, then direct ssh2 compares it with the key negotiated during key exchange before user
+authentication, sessions, or SFTP.
+
+Fail if the requested schema is not `2`; do not silently fall back to the ordinary recipe shape. The
+`ORCA_RECIPE_RESULT_SCHEMA_VERSION=2` advertisement is the capability boundary: older clients request
+schema 1 and provisioned-root scripts must refuse that request, while ordinary schema-v1 SSH results
+remain valid without `hostKey`. Schema 2 was unreleased before this requirement, so migrate every
+schema-v2 create/resume result to emit the pin rather than adding a pinless compatibility branch.
+
+When Orca selects the system OpenSSH transport (for example, for a security-key identity), OpenSSH's
+normal `known_hosts` and `StrictHostKeyChecking` policy remains authoritative. Orca does not inject a
+permissive verifier, disable checking, or replace the user's known-hosts files; provision known_hosts
+out of band when that transport is required.
+
+**Networking → which `target` fields to set** (how _your desktop_ reaches the box — there is no
 `orca serve` URL in SSH mode):
 
 - Public IP / DNS, or a Tailscale/VPN address → `host`; SSH port → `port` (usually 22).
 - Key auth → `identityFile` (add `identitiesOnly: true` if the agent has many keys).
+- Schema-v2 provisioned root → `hostKey`, sourced through trusted provider/image metadata as described
+  above. Schema-v1 SSH may omit it for compatibility.
 - Through a bastion → `jumpHost` (a `user@host` ProxyJump) **or** a full `proxyCommand` (e.g. an access
   proxy). Use one, not both.
 - A service port the workspace needs → add entries to `portForwards`.
@@ -511,7 +547,7 @@ Fail if the requested schema is not `2`; do not silently fall back to the ordina
   reconnect grace window.
 
 **Toolchain & agent auth on a persistent (no-snapshot) host — do this ONCE, by hand, before wiring the
-recipe** (there's no base image to bake; the host *is* the base). Run the §7f Phase-2 install steps and
+recipe** (there's no base image to bake; the host _is_ the base). Run the §7f Phase-2 install steps and
 the §7f Phase-3 `<agent> login --device-auth` **directly over SSH on the host** (interactive, e.g.
 `ssh -t user@host '<agent> login --device-auth'`). After that the host stays ready across workspaces.
 
@@ -564,7 +600,7 @@ Key points:
 
 - Publish container SSH to a random localhost port (`-p 127.0.0.1::22`) and emit
   `connection.type:"ssh"` with `host:"127.0.0.1"`, that port, `username`, `identityFile`, and
-  `identitiesOnly:true`.
+  `identitiesOnly:true`. Provisioned-root schema v2 must also emit the baked image's `hostKey`.
 - Generate a repo-local SSH key if needed, but gitignore the private/public key files.
 - **Bake SSH host keys into the base image** (`ssh-keygen -A` at **build** time; at runtime only generate
   if absent). Ephemeral containers all present the **same** host key, so `known_hosts` on `127.0.0.1`
@@ -615,7 +651,7 @@ $ErrorActionPreference = 'Stop'
 # progress/errors → Write-Error / the error stream, never stdout.
 ```
 
-The remote-side commands you run *inside* the Linux VM stay bash regardless of the desktop OS.
+The remote-side commands you run _inside_ the Linux VM stay bash regardless of the desktop OS.
 
 ---
 
@@ -658,7 +694,8 @@ worked script in §7g). `pairingCode` is **not** used in SSH mode.
 `checkoutMode: provisioned-root` to the recipe, require `ORCA_RECIPE_RESULT_SCHEMA_VERSION=2`, create
 the requested `ORCA_REPO_BRANCH` at the pinned `ORCA_REPO_REF_HEAD` commit (use `ORCA_REPO_REF` only
 to fetch that commit) at the returned `projectRoot`, and emit schema version 2 with
-`checkoutMode: "provisioned-root"`. All recipes without this field retain the schema-v1 behavior above.
+`checkoutMode: "provisioned-root"` and `target.hostKey` (§7g). All recipes without this field retain the
+schema-v1 behavior above.
 
 Lifecycle hooks (all run locally):
 
@@ -702,10 +739,10 @@ each stage so you can self-diagnose without asking the user to relay logs:
 ```json
 {
   "ok": false,
-  "checks": [ { "id": "recipe.provision", "status": "fail", "message": "…" } ],
+  "checks": [{ "id": "recipe.provision", "status": "fail", "message": "…" }],
   "provisionTranscript": {
     "provision": { "exitCode": 0, "signal": null, "stdout": "…", "stderr": "…", "parseError": "…" },
-    "destroy":   { "exitCode": 0, "signal": null, "stdout": "…", "stderr": "…" }
+    "destroy": { "exitCode": 0, "signal": null, "stdout": "…", "stderr": "…" }
   }
 }
 ```
@@ -743,13 +780,16 @@ startup-only `docker run` before the full clone/install path.
 - **Agent verified as "not logged in" despite a good login.** `codex login status` (and similar) print
   "Logged in …" to **stderr**; an stdout-only `grep` misses it. Prefer the status **exit code**; if you
   grep, fold stderr first (`status 2>&1 | grep …`) and match the exact success line — not `grep -qi
-  'logged in'`, which also matches "not logged in".
+'logged in'`, which also matches "not logged in".
 - **Headless agent login hangs.** Plain OAuth `login` starts a loopback callback server on a VM/container
   port the host browser can't reach. Use the **device-auth** flow (`login --device-auth`) — it prints a
   URL + code the user opens on the host.
 - **`known_hosts` host-key churn on local Docker.** Each ephemeral container regenerating its SSH host key
   collides on `127.0.0.1` as the published port rotates. Bake host keys into the base image at build time
   (`ssh-keygen -A`; runtime generates only if absent) so all containers share one stable key (§7h).
+- **Provisioned-root result is rejected for missing/mismatched `hostKey`.** Emit the image/provider key
+  in schema-v2 create and resume results. A mismatch is a security failure: verify the provider identity
+  or intentionally rotate the trusted pin; never bypass verification or downgrade the result to schema 1.
 - **Snapshot expired/evicted.** If `create` hits an unknown snapshot id, rerun Phases 2–3 and update
   `snapshotId`.
 - **Agent auth didn't persist.** Confirm `snapshotId` points at the **authenticated** snapshot; re-run

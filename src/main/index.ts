@@ -134,7 +134,16 @@ import {
   installUnhandledRejectionLogging
 } from './startup/main-process-error-guards'
 import { enableRendererHeapHeadroom } from './startup/renderer-heap-headroom'
-import { argvRequestsServeMode, normalizeServeModeArgv } from './startup/serve-mode-argv'
+import {
+  argvRequestsServeMode,
+  argvHasServeFlag,
+  normalizeServeModeArgv,
+  readOperatorRecipeCatalogServeFlags
+} from './startup/serve-mode-argv'
+import {
+  loadOperatorEnvironmentRecipeCatalog,
+  type OperatorEnvironmentRecipeCatalog
+} from './operator-environment-recipe-catalog'
 import { ensureVirtualDisplayForHeadlessServe } from './startup/ensure-virtual-display'
 import {
   readActiveGpuFallbackMarker,
@@ -1821,9 +1830,10 @@ type ServeOptions = {
   mobilePairing: boolean
   recipeJson: boolean
   projectRoot: string | null
+  operatorRecipeCatalog?: OperatorEnvironmentRecipeCatalog
 }
 
-function getServeOptions(argv = process.argv): ServeOptions {
+export function getServeOptions(argv = process.argv): ServeOptions {
   const valueAfter = (flag: string): string | null => {
     const index = argv.indexOf(flag)
     if (index === -1) {
@@ -1841,6 +1851,26 @@ function getServeOptions(argv = process.argv): ServeOptions {
     }
     wsPort = parsedPort
   }
+  const catalogFlags = readOperatorRecipeCatalogServeFlags(argv)
+  if (catalogFlags && !argv.includes('--serve-no-pairing')) {
+    throw new Error('Operator recipe catalog mode requires --serve-no-pairing.')
+  }
+  if (
+    catalogFlags &&
+    (argvHasServeFlag(argv, '--serve-mobile-pairing') ||
+      argvHasServeFlag(argv, '--serve-recipe-json') ||
+      argvHasServeFlag(argv, '--serve-project-root'))
+  ) {
+    throw new Error(
+      'Operator recipe catalog mode rejects mobile pairing, recipe JSON, and project root flags.'
+    )
+  }
+  const operatorRecipeCatalog = catalogFlags
+    ? loadOperatorEnvironmentRecipeCatalog({
+        catalogPath: catalogFlags.path,
+        sha256: catalogFlags.sha256
+      })
+    : undefined
   return {
     json: argv.includes('--serve-json'),
     ...(wsPort !== undefined ? { wsPort } : {}),
@@ -1848,7 +1878,8 @@ function getServeOptions(argv = process.argv): ServeOptions {
     noPairing: argv.includes('--serve-no-pairing'),
     mobilePairing: argv.includes('--serve-mobile-pairing'),
     recipeJson: argv.includes('--serve-recipe-json'),
-    projectRoot: valueAfter('--serve-project-root')
+    projectRoot: valueAfter('--serve-project-root'),
+    ...(operatorRecipeCatalog ? { operatorRecipeCatalog } : {})
   }
 }
 
@@ -2961,6 +2992,12 @@ void app.whenReady().then(async () => {
     app.exit(1)
     return
   }
+  if (serveOptions?.operatorRecipeCatalog) {
+    const { digest, recipeIds } = serveOptions.operatorRecipeCatalog.status
+    console.info(
+      `[operator-recipe-catalog] enabled digest=${digest} recipes=${recipeIds.join(',')}`
+    )
+  }
   // Why: existing installs may have pairing creds under the late app.getPath('userData'); copy them forward before switching to the canonical path.
   migrateMobilePairingDataToCanonicalUserDataPath(app.getPath('userData'))
   runtimeRpc = new OrcaRuntimeRpcServer({
@@ -2980,7 +3017,8 @@ void app.whenReady().then(async () => {
           preferPinnedWsPort: true
         }
       : {}),
-    webClientRoot: getBundledWebClientRoot()
+    webClientRoot: getBundledWebClientRoot(),
+    operatorRecipeCatalog: serveOptions?.operatorRecipeCatalog
   })
   registerMobileHandlers(runtimeRpc, {
     getRelayStatus: () => desktopRelayStatus,

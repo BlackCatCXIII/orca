@@ -99,6 +99,10 @@ const STRUCTURED_RUNTIME_PASSTHROUGH_CODES: ReadonlySet<string> = new Set([
   'stale_delivery',
   'waiter_exists',
   'invalid_argument',
+  'environment_recipe_forbidden',
+  'environment_recipe_not_found',
+  'environment_recipe_conflict',
+  'environment_recipe_failed',
   GIT_DIFF_TOO_LARGE_CODE,
   ARTIFACT_SHARING_DISABLED_CODE
 ])

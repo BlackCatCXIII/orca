@@ -179,7 +179,10 @@ export class RuntimeClient {
             ...(response.result.remoteUpdateSupport
               ? { remoteUpdateSupport: response.result.remoteUpdateSupport }
               : {}),
-            ...(response.result.capabilities ? { capabilities: response.result.capabilities } : {})
+            ...(response.result.capabilities ? { capabilities: response.result.capabilities } : {}),
+            ...(response.result.operatorRecipeCatalog
+              ? { operatorRecipeCatalog: response.result.operatorRecipeCatalog }
+              : {})
           },
           graph: {
             state: graphState

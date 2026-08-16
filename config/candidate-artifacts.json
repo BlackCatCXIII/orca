@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "sourceRevision": "cc7d1abaef9a1d89675d985b5ff6e1574b998a18",
+  "lockfiles": ["pnpm-lock.yaml", "mobile/pnpm-lock.yaml"],
+  "platforms": {
+    "desktop-linux-x64": [
+      {
+        "path": "orca-hub-linux-x64.deb",
+        "role": "hub-and-desktop-package",
+        "mediaType": "application/vnd.debian.binary-package",
+        "installability": "installable",
+        "signingStatus": "unsigned"
+      }
+    ],
+    "desktop-linux-arm64": [
+      {
+        "path": "orca-desktop-linux-arm64.deb",
+        "role": "desktop-installer",
+        "mediaType": "application/vnd.debian.binary-package",
+        "installability": "installable",
+        "signingStatus": "unsigned"
+      }
+    ],
+    "desktop-windows-x64": [
+      {
+        "path": "orca-desktop-windows-x64.exe",
+        "role": "desktop-installer",
+        "mediaType": "application/vnd.microsoft.portable-executable",
+        "installability": "installable-with-warning",
+        "signingStatus": "unsigned"
+      }
+    ],
+    "desktop-macos": [
+      {
+        "path": "orca-desktop-macos-x64.dmg",
+        "role": "desktop-installer",
+        "mediaType": "application/x-apple-diskimage",
+        "installability": "installable-with-warning",
+        "signingStatus": "unsigned"
+      },
+      {
+        "path": "orca-desktop-macos-arm64.dmg",
+        "role": "desktop-installer",
+        "mediaType": "application/x-apple-diskimage",
+        "installability": "installable-with-warning",
+        "signingStatus": "unsigned"
+      }
+    ],
+    "mobile-android": [
+      {
+        "path": "orca-mobile-android-debug.apk",
+        "role": "development-apk",
+        "mediaType": "application/vnd.android.package-archive",
+        "installability": "development-only",
+        "signingStatus": "android-debug-key"
+      }
+    ],
+    "mobile-ios-simulator": [
+      {
+        "path": "orca-mobile-ios-simulator.tar.gz",
+        "role": "simulator-app",
+        "mediaType": "application/gzip",
+        "installability": "simulator-only",
+        "signingStatus": "unsigned"
+      }
+    ]
+  }
+}

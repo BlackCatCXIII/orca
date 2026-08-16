@@ -44,6 +44,7 @@ export type EphemeralVmRecipeStartArgs = {
   onStdout?: (chunk: string) => void
   onStderr?: (chunk: string) => void
   spawnCommand?: typeof spawn
+  executionMode?: 'shell' | 'direct'
 }
 
 export type EphemeralVmRecipeStartSuccess = {
@@ -69,17 +70,9 @@ export type EphemeralVmRecipeStartResult =
   | EphemeralVmRecipeStartSuccess
   | EphemeralVmRecipeStartFailure
 
-export type EphemeralVmRecipeCleanupArgs = {
-  recipe: OrcaVmRecipe
-  repoPath: string
+export type EphemeralVmRecipeCleanupArgs = Omit<EphemeralVmRecipeStartArgs, 'context'> & {
   context: EphemeralVmRecipeContext
   recipeResult: EphemeralVmRecipeResult
-  env?: NodeJS.ProcessEnv
-  maxCaptureBytes?: number
-  signal?: AbortSignal
-  onStdout?: (chunk: string) => void
-  onStderr?: (chunk: string) => void
-  spawnCommand?: typeof spawn
 }
 
 export type EphemeralVmRecipeLifecycleArgs = EphemeralVmRecipeCleanupArgs
@@ -112,6 +105,7 @@ export async function runEphemeralVmRecipeStart(
   const context = buildRecipeContext(args.recipe, args.repoPath, args.context)
   const processResult = await runRecipeCommand({
     command: args.recipe.create,
+    executionMode: args.executionMode,
     repoPath: args.repoPath,
     context,
     mode: 'create',
@@ -173,6 +167,7 @@ export async function runEphemeralVmRecipeCleanup(
   const payload = buildEphemeralVmRecipeCleanupPayload(args)
   const processResult = await runRecipeCommand({
     command: args.recipe.destroy,
+    executionMode: args.executionMode,
     repoPath: args.repoPath,
     context: args.context,
     mode: 'destroy',
@@ -205,6 +200,7 @@ export async function runEphemeralVmRecipeSuspend(
   const payload = buildEphemeralVmRecipeLifecyclePayload({ ...args, mode: 'suspend' })
   const processResult = await runRecipeCommand({
     command: args.recipe.suspend,
+    executionMode: args.executionMode,
     repoPath: args.repoPath,
     context: args.context,
     mode: 'suspend',
@@ -247,6 +243,7 @@ export async function runEphemeralVmRecipeResume(
   const payload = buildEphemeralVmRecipeLifecyclePayload({ ...args, mode: 'resume' })
   const processResult = await runRecipeCommand({
     command: args.recipe.resume,
+    executionMode: args.executionMode,
     repoPath: args.repoPath,
     context: args.context,
     mode: 'resume',

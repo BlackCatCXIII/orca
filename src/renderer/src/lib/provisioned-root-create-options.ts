@@ -2,6 +2,7 @@ import type { WorktreeCreationRequest } from './pending-worktree-creation'
 
 export type ProvisionedRootCreateOptions = {
   runtimeId: string
+  sourceRepoId: string
   executionHostId: NonNullable<WorktreeCreationRequest['workspaceRunContext']>['hostId']
   expectedPath: string
   expectedRefHead?: string
@@ -16,12 +17,14 @@ export function getProvisionedRootCreateOptions(
   if (
     !request.ephemeralVmRuntimeId ||
     !request.workspaceRunContext ||
+    !request.ephemeralVmRecipe ||
     (request.baseBranch && !request.ephemeralVmExpectedRefHead)
   ) {
     throw new Error('Provisioned-root workspace identity is incomplete.')
   }
   return {
     runtimeId: request.ephemeralVmRuntimeId,
+    sourceRepoId: request.ephemeralVmRecipe.sourceRepoId,
     executionHostId: request.workspaceRunContext.hostId,
     expectedPath: request.workspaceRunContext.path,
     ...(request.ephemeralVmExpectedRefHead

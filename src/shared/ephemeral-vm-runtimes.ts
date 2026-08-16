@@ -31,6 +31,13 @@ export type EphemeralVmCleanupStatus = z.infer<typeof EphemeralVmCleanupStatusSc
 
 export const EphemeralVmRuntimeConnectionModeSchema = z.enum(['orca-server', 'ssh'])
 
+const EphemeralVmProvisionMutationSchema = z
+  .object({
+    requestSha256: z.string().regex(/^[0-9a-f]{64}$/),
+    resolvedRef: z.string().min(1)
+  })
+  .strict()
+
 const EphemeralVmRuntimeRecipeSchema = z
   .object({
     id: z.string().min(1),
@@ -51,6 +58,11 @@ export const EphemeralVmRuntimeRecordSchema = z.object({
   /** Immutable lifecycle commands used for this runtime even if its source
    * pack is updated, disabled, or removed later. */
   recipe: EphemeralVmRuntimeRecipeSchema.optional(),
+  operatorRecipeCatalogSha256: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/)
+    .optional(),
+  provisionMutation: EphemeralVmProvisionMutationSchema.optional(),
   repoId: z.string().min(1).optional(),
   projectId: z.string().min(1).optional(),
   workspaceId: z.string().min(1).optional(),

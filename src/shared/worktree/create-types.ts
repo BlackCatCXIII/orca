@@ -121,6 +121,7 @@ export type CreateWorktreeArgs = {
 
 export type AdoptProvisionedRootArgs = CreateWorktreeArgs & {
   runtimeId: string
+  sourceRepoId: string
   executionHostId: ExecutionHostId
   expectedPath: string
   expectedRefHead?: string

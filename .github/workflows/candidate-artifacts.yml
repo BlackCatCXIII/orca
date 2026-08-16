@@ -1,0 +1,143 @@
+name: Candidate Artifacts
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-artifacts-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  policy:
+    runs-on: orca-source-ci
+    timeout-minutes: 15
+    steps:
+      - name: Checkout candidate policy
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+
+      - name: Checkout pinned candidate source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: cc7d1abaef9a1d89675d985b5ff6e1574b998a18
+          path: source
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@f2b2b233b538f500472c7274c7012f57857d8ce0 # v4.1.0
+        with:
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: package.json
+          package-manager-cache: false
+
+      - name: Install policy dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Validate workflow and adversarial cases
+        env:
+          CANDIDATE_TEST_SOURCE_ROOT: source
+        run: >-
+          pnpm exec vitest run --config config/vitest.config.ts
+          config/scripts/candidate-artifact-workflow-policy.test.mjs
+          config/scripts/minio-artifact-retention.test.mjs
+
+      - name: Validate workflow policy directly
+        run: node config/scripts/candidate-artifact-workflow-policy.mjs
+
+  desktop-linux-x64:
+    needs: policy
+    runs-on: orca-source-ci
+    timeout-minutes: 120
+    steps:
+      - name: Checkout candidate policy
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+
+      - name: Checkout pinned candidate source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: cc7d1abaef9a1d89675d985b5ff6e1574b998a18
+          path: source
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@f2b2b233b538f500472c7274c7012f57857d8ce0 # v4.1.0
+        with:
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: source/package.json
+          package-manager-cache: false
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-gi gir1.2-atspi-2.0 at-spi2-core xclip xdotool
+          npm install -g node-gyp@11.5.0
+          echo "npm_config_node_gyp=$(npm root -g)/node-gyp/bin/node-gyp.js" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        working-directory: source
+        run: pnpm install --frozen-lockfile
+
+      - name: Build desktop inputs
+        working-directory: source
+        run: pnpm run build:release
+
+      - name: Build unpublished Linux packages
+        working-directory: source
+        run: >-
+          pnpm exec electron-builder --config ../config/electron-builder-candidate.config.cjs
+          --linux deb --x64 --publish never
+
+      - name: Stage exact Linux x64 allowlist
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          debs=(source/dist/orca-ide_*_amd64.deb)
+          [[ "${#debs[@]}" -eq 1 ]] || { echo "Expected exactly one amd64 deb"; exit 1; }
+          metadata=(source/dist/latest*.yml source/dist/*.blockmap)
+          [[ "${#metadata[@]}" -eq 0 ]] || { echo "Update metadata was produced"; exit 1; }
+          ! find source/dist -type f \( -name app-update.yml -o -name '*-mac.json' \) -print -quit | grep -q . || {
+            echo "Embedded update metadata was produced"; exit 1;
+          }
+          mkdir -p candidate-out/desktop-linux-x64
+          cp "${debs[0]}" candidate-out/desktop-linux-x64/orca-hub-linux-x64.deb
+
+      - name: Write Linux x64 provenance
+        run: >-
+          node config/scripts/candidate-artifact-provenance.mjs write
+          --platform desktop-linux-x64 --source source
+          --artifacts candidate-out/desktop-linux-x64
+          --workflow-revision "${{ github.workflow_sha }}"
+
+      - name: Verify Linux x64 provenance
+        run: >-
+          node config/scripts/candidate-artifact-provenance.mjs verify
+          --platform desktop-linux-x64 --source source
+          --artifacts candidate-out/desktop-linux-x64
+          --workflow-revision "${{ github.workflow_sha }}"
+
+      - name: Retain immutable Linux x64 candidates in MinIO
+        run: >-
+          node config/scripts/minio-artifact-retention.mjs
+          --prefix candidate-artifacts
+          --source-sha "$(git -C source rev-parse HEAD)"
+          --workflow-file .github/workflows/candidate-artifacts.yml
+          --run-id "${{ github.run_id }}"
+          --run-attempt "${{ github.run_attempt }}"
+          --directory candidate-out/desktop-linux-x64

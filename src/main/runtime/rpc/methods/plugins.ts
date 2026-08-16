@@ -9,6 +9,8 @@ import {
   type PluginConsentRequest
 } from '../../../../shared/plugins/plugin-consent-request'
 import { isQualifiedPluginKey } from '../../../../shared/plugins/plugin-manifest'
+import { getApprovedPluginVmRecipes } from '../../../plugins/plugin-approved-vm-recipes'
+import type { OrcaVmRecipe } from '../../../../shared/orca-yaml-hook-types'
 
 /**
  * Serve/headless parity surface: the same consent, enablement, panel-action,
@@ -43,6 +45,10 @@ function requirePluginService(): PluginService {
     throw new Error('Plugin service is not available on this runtime')
   }
   return pluginServiceForRpc
+}
+
+export function getApprovedPluginVmRecipesForRpc(): Promise<OrcaVmRecipe[]> {
+  return getApprovedPluginVmRecipes(pluginServiceForRpc ?? undefined)
 }
 
 const PluginSetEnabledParams = z.object({

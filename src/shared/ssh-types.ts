@@ -1,3 +1,5 @@
+import type { SshHostKeyPin } from './ssh-host-key-pin'
+
 // ─── SSH Connection Types ───────────────────────────────────────────
 
 export const MIN_SSH_RELAY_GRACE_PERIOD_SECONDS = 60
@@ -18,6 +20,8 @@ export type SshTarget = {
   host: string
   port: number
   username: string
+  /** Server identity required by provisioned-root direct SSH connections. */
+  hostKey?: SshHostKeyPin
   /** Path to private key file, if using key-based auth. */
   identityFile?: string
   /** SSH agent socket path from IdentityAgent, if configured. */

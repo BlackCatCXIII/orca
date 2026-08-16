@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { PassThrough } from 'node:stream'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -26,6 +26,31 @@ function nodeCommand(scriptPath: string): string {
 }
 
 describe('runRecipeCommand', () => {
+  it.skipIf(process.platform === 'win32')(
+    'executes an operator script directly with no shell or argument expansion',
+    async () => {
+      const repoPath = makeRepo()
+      const scriptPath = join(repoPath, 'operator-script')
+      writeFileSync(
+        scriptPath,
+        `#!${process.execPath}\nprocess.stdout.write(JSON.stringify(process.argv.slice(1)))\n`
+      )
+      chmodSync(scriptPath, 0o755)
+
+      const result = await runRecipeCommand({
+        command: scriptPath,
+        executionMode: 'direct',
+        repoPath,
+        mode: 'create',
+        resultSchemaVersion: 2,
+        context: { recipeId: 'operator', repoPath }
+      })
+
+      expect(result.exitCode).toBe(0)
+      expect(JSON.parse(result.stdout)).toEqual([scriptPath])
+    }
+  )
+
   it('does not impose an implicit wall-clock deadline', async () => {
     vi.useFakeTimers()
     const child = Object.assign(new EventEmitter(), {

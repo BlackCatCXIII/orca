@@ -1,17 +1,7 @@
 import { randomBytes } from 'node:crypto'
-import {
-  chmodSync,
-  closeSync,
-  existsSync,
-  fsyncSync,
-  mkdirSync,
-  openSync,
-  renameSync,
-  rmSync,
-  statSync,
-  writeFileSync
-} from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
+import { fsyncSecurePathSync, renameSecureFileSync } from './secure-file-filesystem'
 import {
   SecurePathHardeningCache,
   type SecurePathHardeningCacheBounds
@@ -99,8 +89,12 @@ export function writeDurableSecureJsonFile(targetPath: string, value: unknown): 
 export function writeSecureFile(
   targetPath: string,
   contents: string,
-  options: { durable?: boolean } = {}
+  options: { durable?: boolean; durability?: 'critical' } = {}
 ): void {
+  const critical = options.durability === 'critical'
+  if (critical && process.platform === 'win32') {
+    throw new Error('Critical secure-file durability is unavailable on Windows.')
+  }
   const dir = dirname(targetPath)
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true, mode: 0o700 })
@@ -114,17 +108,19 @@ export function writeSecureFile(
       encoding: 'utf-8',
       mode: 0o600
     })
-    if (options.durable) {
+    if (options.durable || critical) {
       fsyncFileSync(tmpFile)
     }
     // Why: writeFileSync mode is a no-op on Windows, so restrict the credential's ACL synchronously before the rename publishes it under inherited ACLs.
     applySecurePathRestriction(tmpFile, false, process.platform, true)
-    renameSync(tmpFile, targetPath)
+    renameSecureFileSync(tmpFile, targetPath)
     // Why: these hold auth credentials, so the published path must stay current-user only; cache only on confirmed success so failures retry.
     if (applySecurePathRestriction(targetPath, false, process.platform, true)) {
       rememberHardenedPath(targetPath, false)
     }
-    if (options.durable) {
+    if (critical) {
+      fsyncDirectorySync(dir)
+    } else if (options.durable) {
       bestEffortFsyncDirectorySync(dir)
     }
   } catch (error) {
@@ -134,12 +130,7 @@ export function writeSecureFile(
 }
 
 function fsyncPathSync(path: string, flags: 'r' | 'r+'): void {
-  const descriptor = openSync(path, flags)
-  try {
-    fsyncSync(descriptor)
-  } finally {
-    closeSync(descriptor)
-  }
+  fsyncSecurePathSync(path, flags)
 }
 
 export function fsyncFileSync(path: string): void {
@@ -162,6 +153,10 @@ export function bestEffortFsyncDirectorySync(directory: string): void {
     }
     throw error
   }
+}
+
+export function fsyncDirectorySync(directory: string): void {
+  fsyncPathSync(directory, 'r')
 }
 
 export function hardenExistingSecureFile(targetPath: string): void {

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orca://contracts/environment-recipes/lifecycle/v1/schema.json",
+  "title": "Orca environment-recipe lifecycle envelope v1",
+  "description": "The JSON value written to suspend, resume, and destroy recipe stdin.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "mode": {
+      "enum": ["suspend", "resume", "destroy"]
+    },
+    "recipeId": {
+      "type": "string"
+    },
+    "instanceId": {
+      "type": "string"
+    },
+    "projectId": {
+      "type": "string"
+    },
+    "workspaceId": {
+      "type": "string"
+    },
+    "workspaceName": {
+      "type": "string"
+    },
+    "recipeResult": {
+      "description": "The unchanged create or previous resume result; its independently versioned shape is intentionally opaque here.",
+      "type": "object"
+    }
+  },
+  "required": ["schemaVersion", "mode", "recipeId", "recipeResult"],
+  "additionalProperties": false
+}

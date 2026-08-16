@@ -58,16 +58,21 @@ describe('serve flag parity between the CLI spec and the Electron argv rewrite',
     // emit a name nothing reads and every behavioural assertion above would still pass.
     const launchSource = readFileSync(join(process.cwd(), 'src/cli/runtime/launch.ts'), 'utf8')
     const mainSource = readFileSync(join(process.cwd(), 'src/main/index.ts'), 'utf8')
+    const startupSource = readFileSync(
+      join(process.cwd(), 'src/main/startup/serve-mode-argv.ts'),
+      'utf8'
+    )
     const start = mainSource.indexOf('function getServeOptions(')
     // Why bound the anchor: an unresolved indexOf slices to EOF and passes vacuously.
     expect(start).toBeGreaterThanOrEqual(0)
     const end = mainSource.indexOf('\n}', start)
     expect(end).toBeGreaterThan(start)
     const getServeOptionsBody = mainSource.slice(start, end)
+    const serveReaderSource = `${getServeOptionsBody}\n${startupSource}`
 
     for (const flag of translatedFlags) {
       expect(launchSource).toContain(`'--serve-${flag}'`)
-      expect(getServeOptionsBody).toContain(`'--serve-${flag}'`)
+      expect(serveReaderSource).toContain(`'--serve-${flag}'`)
     }
   })
 

@@ -183,6 +183,13 @@ export function formatCliStatus(status: CliStatusResult): string {
     `runtimeState: ${status.runtime.state}`,
     `runtimeReachable: ${status.runtime.reachable}`,
     `runtimeId: ${status.runtime.runtimeId ?? 'none'}`,
+    `operatorRecipeCatalog: ${status.runtime.operatorRecipeCatalog?.enabled === true}`,
+    ...(status.runtime.operatorRecipeCatalog
+      ? [
+          `operatorRecipeCatalogDigest: ${status.runtime.operatorRecipeCatalog.digest}`,
+          `operatorRecipeCatalogRecipeIds: ${status.runtime.operatorRecipeCatalog.recipeIds.join(',')}`
+        ]
+      : []),
     `graphState: ${status.graph.state}`
   ].join('\n')
 }

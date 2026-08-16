@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { isAbsolute, resolve } from 'node:path'
 import type { CommandHandler } from '../dispatch'
 import { formatCliStatus, formatStatus, printResult } from '../format'
 import { RuntimeClientError, serveOrcaApp } from '../runtime-client'
@@ -57,6 +58,63 @@ function getOptionalServePort(flags: Map<string, string | boolean>): string | nu
   return rawPort
 }
 
+function getOperatorRecipeCatalogFlags(flags: Map<string, string | boolean>): {
+  path: string
+  sha256: string
+} | null {
+  const hasPath = flags.has('operator-recipe-catalog')
+  const hasDigest = flags.has('operator-recipe-catalog-sha256')
+  if (hasPath !== hasDigest) {
+    throw new RuntimeClientError(
+      'invalid_argument',
+      'Operator recipe catalog path and SHA-256 flags must be provided together.'
+    )
+  }
+  if (!hasPath) {
+    return null
+  }
+  const path = flags.get('operator-recipe-catalog')
+  const sha256 = flags.get('operator-recipe-catalog-sha256')
+  if (
+    (typeof path === 'string' && path.includes('\u0000')) ||
+    (typeof sha256 === 'string' && sha256.includes('\u0000'))
+  ) {
+    throw new RuntimeClientError(
+      'invalid_argument',
+      'Operator recipe catalog flags must not be repeated.'
+    )
+  }
+  if (typeof path !== 'string' || !isAbsolute(path) || resolve(path) !== path) {
+    throw new RuntimeClientError(
+      'invalid_argument',
+      'Operator recipe catalog path must be absolute and normalized.'
+    )
+  }
+  if (typeof sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(sha256)) {
+    throw new RuntimeClientError(
+      'invalid_argument',
+      'Operator recipe catalog digest must be lowercase SHA-256.'
+    )
+  }
+  if (flags.get('no-pairing') !== true) {
+    throw new RuntimeClientError(
+      'invalid_argument',
+      'Operator recipe catalog mode requires --no-pairing.'
+    )
+  }
+  if (
+    flags.get('mobile-pairing') === true ||
+    flags.get('recipe-json') === true ||
+    flags.has('project-root')
+  ) {
+    throw new RuntimeClientError(
+      'invalid_argument',
+      'Operator recipe catalog mode rejects mobile pairing, recipe JSON, and --project-root.'
+    )
+  }
+  return { path, sha256 }
+}
+
 export const CORE_HANDLERS: Record<string, CommandHandler> = {
   'claude-teams': async ({ client, rawArgs }) => {
     if (process.platform === 'win32') {
@@ -92,6 +150,7 @@ export const CORE_HANDLERS: Record<string, CommandHandler> = {
     printResult(result, json, formatCliStatus)
   },
   serve: async ({ flags, json }) => {
+    const operatorRecipeCatalog = getOperatorRecipeCatalogFlags(flags)
     if (flags.get('no-pairing') === true && flags.get('mobile-pairing') === true) {
       throw new RuntimeClientError(
         'invalid_argument',
@@ -129,7 +188,13 @@ export const CORE_HANDLERS: Record<string, CommandHandler> = {
       noPairing: flags.get('no-pairing') === true,
       mobilePairing: flags.get('mobile-pairing') === true,
       recipeJson: flags.get('recipe-json') === true,
-      projectRoot
+      projectRoot,
+      ...(operatorRecipeCatalog
+        ? {
+            operatorRecipeCatalogPath: operatorRecipeCatalog.path,
+            operatorRecipeCatalogSha256: operatorRecipeCatalog.sha256
+          }
+        : {})
     })
     process.exitCode = exitCode
   },

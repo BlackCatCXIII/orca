@@ -190,7 +190,7 @@ export const REPO_METHODS: RpcMethod[] = [
     params: RepoPath,
     handler: async (params, context) => ({
       repo: projectRepoVisibilityForClient(
-        await context.runtime.addRepo(params.path, params.kind),
+        await context.runtime.addRepoDurably(params.path, params.kind),
         context
       )
     })

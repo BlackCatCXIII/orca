@@ -285,6 +285,18 @@ describe('spawnSystemSsh', () => {
     expect(args).toContain('deploy@127.0.0.1')
   })
 
+  it('leaves system OpenSSH known_hosts policy authoritative for pinned targets', () => {
+    const args = buildSshArgs(
+      createTarget({
+        hostKey: { type: 'sha256', fingerprint: `SHA256:${'A'.repeat(43)}` }
+      })
+    )
+
+    expect(args.join('\n')).not.toMatch(
+      /StrictHostKeyChecking|UserKnownHostsFile|GlobalKnownHostsFile/
+    )
+  })
+
   it('requests GSSAPI authentication explicitly for manual targets', () => {
     const args = buildSshArgs(
       createTarget({ source: 'manual', configHost: 'krb.example.com', gssapiAuthentication: true })

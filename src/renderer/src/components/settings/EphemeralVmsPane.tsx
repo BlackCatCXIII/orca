@@ -27,6 +27,7 @@ import {
   ensureWslCliAvailableForAgentSkillTerminal,
   getWslCliDistroRequest
 } from './CliSkillRuntimeSetup'
+import { RemoteEnvironmentWorkspacesSection } from './RemoteEnvironmentWorkspacesSection'
 
 type RecipeCatalogEntry = Awaited<
   ReturnType<typeof window.api.ephemeralVm.listRecipeCatalog>
@@ -40,6 +41,9 @@ const AGENT_PROMPT =
 export function EphemeralVmsPane(): React.JSX.Element {
   const openModal = useAppStore((state) => state.openModal)
   const activeSkillRuntime = useActiveProjectSkillRuntime()
+  const activeRuntimeEnvironmentId = useAppStore(
+    (state) => state.settings?.activeRuntimeEnvironmentId?.trim() ?? ''
+  )
   const [catalog, setCatalog] = useState<RecipeCatalogEntry[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [promptCopied, setPromptCopied] = useState(false)
@@ -142,6 +146,9 @@ export function EphemeralVmsPane(): React.JSX.Element {
 
   return (
     <div className="space-y-6" data-settings-section="ephemeral-vms">
+      {activeRuntimeEnvironmentId ? (
+        <RemoteEnvironmentWorkspacesSection environmentId={activeRuntimeEnvironmentId} />
+      ) : null}
       <AgentSkillSetupPanel
         title={translate(
           'auto.components.settings.EphemeralVmsPane.cloudVmSkillTitle',

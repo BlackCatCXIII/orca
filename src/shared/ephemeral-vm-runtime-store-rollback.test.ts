@@ -85,7 +85,8 @@ function provisionedRootRecord(): EphemeralVmRuntimeRecord {
           label: 'Provisioned VM',
           host: 'provisioned.example.com',
           port: 22,
-          username: 'developer'
+          username: 'developer',
+          hostKey: { type: 'sha256', fingerprint: `SHA256:${'A'.repeat(43)}` }
         }
       },
       userData: { resourceId: 'provisioned-resource' }

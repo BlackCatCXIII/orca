@@ -83,6 +83,8 @@ export function serveOrcaApp(
     mobilePairing?: boolean
     recipeJson?: boolean
     projectRoot?: string | null
+    operatorRecipeCatalogPath?: string | null
+    operatorRecipeCatalogSha256?: string | null
   } = {}
 ): Promise<number> {
   const executable = resolveForegroundOrcaExecutable()
@@ -114,6 +116,14 @@ export function serveOrcaApp(
       )
     }
     childArgs.push('--serve-recipe-json', '--serve-project-root', args.projectRoot)
+  }
+  if (args.operatorRecipeCatalogPath && args.operatorRecipeCatalogSha256) {
+    childArgs.push(
+      '--serve-operator-recipe-catalog',
+      args.operatorRecipeCatalogPath,
+      '--serve-operator-recipe-catalog-sha256',
+      args.operatorRecipeCatalogSha256
+    )
   }
 
   const handoffPath =

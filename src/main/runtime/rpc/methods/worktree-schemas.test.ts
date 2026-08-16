@@ -2,6 +2,50 @@ import { describe, expect, it } from 'vitest'
 import { WorktreeActivate, WorktreeCreate, WorktreeSet } from './worktree-schemas'
 
 describe('worktree RPC schemas', () => {
+  it('accepts only bounded additive provisioned-root adoption metadata', () => {
+    expect(
+      WorktreeCreate.parse({
+        repo: 'id:repo-1',
+        clientMutationId: 'adopt-1',
+        provisionedRoot: {
+          runtimeId: 'runtime-1',
+          sourceRepoId: 'source-repo-1',
+          executionHostId: 'ssh:runtime-ssh-runtime-1',
+          expectedPath: '/srv/repo'
+        }
+      }).provisionedRoot
+    ).toEqual({
+      runtimeId: 'runtime-1',
+      sourceRepoId: 'source-repo-1',
+      executionHostId: 'ssh:runtime-ssh-runtime-1',
+      expectedPath: '/srv/repo'
+    })
+    expect(
+      WorktreeCreate.safeParse({
+        repo: 'id:repo-1',
+        clientMutationId: 'adopt-1',
+        provisionedRoot: {
+          runtimeId: 'runtime-1',
+          sourceRepoId: 'source-repo-1',
+          executionHostId: 'runtime:nested',
+          expectedPath: '/srv/repo'
+        }
+      }).success
+    ).toBe(false)
+    expect(
+      WorktreeCreate.safeParse({
+        repo: 'id:repo-1',
+        provisionedRoot: {
+          runtimeId: 'runtime-1',
+          sourceRepoId: 'source-repo-1',
+          executionHostId: 'ssh:runtime-ssh-runtime-1',
+          expectedPath: '/srv/repo'
+        }
+      }).success
+    ).toBe(false)
+    expect(WorktreeCreate.safeParse({ repo: 'id:repo-1', name: 'legacy' }).success).toBe(true)
+  })
+
   it('validates additive navigation intent', () => {
     expect(WorktreeActivate.parse({ worktree: 'id:wt-1', navigation: 'clients' }).navigation).toBe(
       'clients'

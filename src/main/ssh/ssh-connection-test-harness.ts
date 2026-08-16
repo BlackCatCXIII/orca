@@ -57,6 +57,7 @@ export const ssh2Mock = {
   connectErrorCode: '',
   destroyErrorMessage: '',
   connectSequence: [] as ('ready' | Error)[],
+  negotiatedHostKey: Buffer.from('mock-ssh-host-key') as Buffer<ArrayBufferLike>,
   execBehavior: 'callback' as 'callback' | 'pending',
   sftpBehavior: 'callback' as 'callback' | 'pending',
   notifyClientCreated: undefined as (() => void) | undefined
@@ -138,8 +139,12 @@ export function createSsh2Module(): Ssh2ModuleMock {
       this.lastConnectConfig = config
       const hostVerifier = (config as { hostVerifier?: (key: Buffer) => boolean } | undefined)
         ?.hostVerifier
-      hostVerifier?.(Buffer.from('mock-ssh-host-key'))
+      const hostAccepted = hostVerifier?.(ssh2Mock.negotiatedHostKey) ?? true
       setTimeout(() => {
+        if (!hostAccepted) {
+          emitSshEvent('error', new Error('Host denied (verification failed)'))
+          return
+        }
         const next = ssh2Mock.connectSequence.shift()
         if (next instanceof Error) {
           emitSshEvent('error', next)
@@ -229,6 +234,7 @@ export function resetSsh2ClientState(): void {
   ssh2Mock.connectBehavior = 'ready'
   ssh2Mock.connectErrorMessage = ''
   ssh2Mock.connectSequence = []
+  ssh2Mock.negotiatedHostKey = Buffer.from('mock-ssh-host-key')
   clientInstances = []
 }
 

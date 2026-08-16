@@ -1,0 +1,251 @@
+import { lstatSync, realpathSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
+import { z } from 'zod'
+import { stringifyJsonWithinByteLimit } from '../shared/node-bounded-json-stringify'
+import { writeSecureFile } from '../shared/secure-file'
+import { readConditionallyAuthoritativeSecureFileSync } from '../shared/secure-file-authoritative-read'
+import { listAuthoritativeEphemeralVmRuntimes } from '../shared/ephemeral-vm-runtime-store'
+import type { EphemeralVmRuntimeRecord } from '../shared/ephemeral-vm-runtimes'
+import { parseStrictUtf8Json } from '../shared/strict-json'
+
+const JOURNAL_FILE = 'orca-environment-recipe-mutations.json'
+const MAX_JOURNAL_FILE_BYTES = 512 * 1024
+export const MAX_DURABLE_ENVIRONMENT_RECIPE_MUTATIONS = 256
+
+const MutationIdentitySchema = z
+  .object({
+    pairedDeviceId: z.string().min(1),
+    method: z.string().min(1),
+    clientMutationId: z.string().min(1)
+  })
+  .strict()
+
+const MutationEntrySchema = MutationIdentitySchema.extend({
+  fingerprint: z.string().regex(/^[0-9a-f]{64}$/),
+  provisionRef: z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64}|\S+)$/),
+  runtimeId: z.string().min(1),
+  operatorRecipeCatalogSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  state: z.enum(['prepared', 'completed', 'terminal']),
+  createdAt: z.number().finite(),
+  updatedAt: z.number().finite()
+}).strict()
+
+const MutationJournalSchema = z
+  .object({
+    version: z.literal(1),
+    entries: z.array(MutationEntrySchema).max(MAX_DURABLE_ENVIRONMENT_RECIPE_MUTATIONS)
+  })
+  .strict()
+
+export type EnvironmentRecipeMutationIdentity = z.infer<typeof MutationIdentitySchema>
+export type DurableEnvironmentRecipeMutation = z.infer<typeof MutationEntrySchema>
+export type DurableEnvironmentRecipeMutationState =
+  | 'prepared'
+  | 'completed'
+  | 'terminal'
+  | 'conflict'
+
+export class EnvironmentRecipeOperationJournalError extends Error {
+  readonly code: 'capacity' | 'invalid'
+
+  constructor(code: EnvironmentRecipeOperationJournalError['code']) {
+    super(`Environment recipe mutation journal ${code}.`)
+    this.name = 'EnvironmentRecipeOperationJournalError'
+    this.code = code
+  }
+}
+
+export function readDurableEnvironmentRecipeMutation(
+  userDataPath: string,
+  identity: EnvironmentRecipeMutationIdentity
+): DurableEnvironmentRecipeMutation | null {
+  return readJournal(userDataPath).entries.find((entry) => sameIdentity(entry, identity)) ?? null
+}
+
+export function prepareDurableEnvironmentRecipeMutation(
+  userDataPath: string,
+  entry: Omit<DurableEnvironmentRecipeMutation, 'state' | 'createdAt' | 'updatedAt'>,
+  now = Date.now(),
+  maxEntries = MAX_DURABLE_ENVIRONMENT_RECIPE_MUTATIONS
+): DurableEnvironmentRecipeMutation {
+  // Synchronous read-through-rename keeps the single host process's journal writers serialized.
+  const journal = readJournal(userDataPath)
+  const existing = journal.entries.find((candidate) => sameIdentity(candidate, entry))
+  if (existing) {
+    return existing
+  }
+  const runtimes = listAuthoritativeEphemeralVmRuntimes(userDataPath)
+  const retained = retainCapacityForPreparedEnvironmentRecipeMutation(
+    journal.entries,
+    maxEntries,
+    (candidate) => {
+      const state = classifyDurableEnvironmentRecipeMutation(candidate, runtimes)
+      return (
+        (state === 'completed' || state === 'terminal') &&
+        hasExactRuntimeBinding(candidate, runtimes)
+      )
+    }
+  )
+  const prepared = MutationEntrySchema.parse({
+    ...entry,
+    state: 'prepared',
+    createdAt: now,
+    updatedAt: now
+  })
+  writeJournal(userDataPath, [...retained, prepared])
+  return prepared
+}
+
+export function classifyDurableEnvironmentRecipeMutationFromStore(
+  userDataPath: string,
+  entry: DurableEnvironmentRecipeMutation
+): DurableEnvironmentRecipeMutationState {
+  return classifyDurableEnvironmentRecipeMutation(
+    entry,
+    listAuthoritativeEphemeralVmRuntimes(userDataPath)
+  )
+}
+
+export function classifyDurableEnvironmentRecipeMutation(
+  entry: DurableEnvironmentRecipeMutation,
+  runtimes: readonly EphemeralVmRuntimeRecord[]
+): DurableEnvironmentRecipeMutationState {
+  if (entry.state === 'terminal') {
+    return 'terminal'
+  }
+  const runtime = runtimes.find((candidate) => candidate.id === entry.runtimeId)
+  if (!runtime) {
+    return entry.state === 'completed' ? 'conflict' : 'prepared'
+  }
+  if (!runtimeBindingMatches(runtime, entry)) {
+    return 'conflict'
+  }
+  return runtime.status === 'cleaned' || runtime.status === 'cleanup_failed'
+    ? 'terminal'
+    : 'completed'
+}
+
+function runtimeBindingMatches(
+  runtime: EphemeralVmRuntimeRecord,
+  entry: DurableEnvironmentRecipeMutation
+): boolean {
+  return (
+    runtime.provisionMutation?.requestSha256 === entry.fingerprint &&
+    runtime.provisionMutation.resolvedRef === entry.provisionRef &&
+    runtime.operatorRecipeCatalogSha256 === entry.operatorRecipeCatalogSha256
+  )
+}
+
+function hasExactRuntimeBinding(
+  entry: DurableEnvironmentRecipeMutation,
+  runtimes: readonly EphemeralVmRuntimeRecord[]
+): boolean {
+  const runtime = runtimes.find((candidate) => candidate.id === entry.runtimeId)
+  return runtime !== undefined && runtimeBindingMatches(runtime, entry)
+}
+
+function readJournal(userDataPath: string): {
+  version: 1
+  entries: DurableEnvironmentRecipeMutation[]
+} {
+  const path = getEnvironmentRecipeOperationJournalPath(userDataPath)
+  try {
+    if (journalPathIsMissing(path)) {
+      return { version: 1, entries: [] }
+    }
+  } catch {
+    throw new EnvironmentRecipeOperationJournalError('invalid')
+  }
+  try {
+    return readConditionallyAuthoritativeSecureFileSync(path, MAX_JOURNAL_FILE_BYTES, (buffer) => ({
+      value: parseJournal(buffer),
+      requiresCriticalDurability: true
+    }))
+  } catch {
+    throw new EnvironmentRecipeOperationJournalError('invalid')
+  }
+}
+
+function journalPathIsMissing(path: string): boolean {
+  try {
+    lstatSync(path)
+    return false
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw error
+    }
+  }
+
+  const canonicalParent = realpathSync(dirname(path))
+  try {
+    lstatSync(join(canonicalParent, basename(path)))
+    return false
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return true
+    }
+    throw error
+  }
+}
+
+function parseJournal(buffer: Buffer): {
+  version: 1
+  entries: DurableEnvironmentRecipeMutation[]
+} {
+  const journal = MutationJournalSchema.parse(parseStrictUtf8Json(buffer))
+  assertUniqueMutationIdentities(journal.entries)
+  return journal
+}
+
+function assertUniqueMutationIdentities(entries: DurableEnvironmentRecipeMutation[]): void {
+  const identities = new Set<string>()
+  for (const entry of entries) {
+    const identity = JSON.stringify([entry.pairedDeviceId, entry.method, entry.clientMutationId])
+    if (identities.has(identity)) {
+      throw new Error('Duplicate environment recipe mutation identity.')
+    }
+    identities.add(identity)
+  }
+}
+
+function writeJournal(userDataPath: string, entries: DurableEnvironmentRecipeMutation[]): void {
+  const serialized = stringifyJsonWithinByteLimit(
+    MutationJournalSchema.parse({ version: 1, entries }),
+    MAX_JOURNAL_FILE_BYTES
+  ).serialized
+  writeSecureFile(getEnvironmentRecipeOperationJournalPath(userDataPath), serialized, {
+    durability: 'critical'
+  })
+}
+
+export function retainCapacityForPreparedEnvironmentRecipeMutation(
+  entries: DurableEnvironmentRecipeMutation[],
+  maxEntries = MAX_DURABLE_ENVIRONMENT_RECIPE_MUTATIONS,
+  isDurablyBacked: (entry: DurableEnvironmentRecipeMutation) => boolean = () => false
+): DurableEnvironmentRecipeMutation[] {
+  if (entries.length < maxEntries) {
+    return entries
+  }
+  const evictable = entries
+    .filter(isDurablyBacked)
+    .sort((a, b) => a.updatedAt - b.updatedAt || a.createdAt - b.createdAt)[0]
+  if (!evictable) {
+    throw new EnvironmentRecipeOperationJournalError('capacity')
+  }
+  return entries.filter((entry) => entry !== evictable)
+}
+
+function sameIdentity(
+  left: EnvironmentRecipeMutationIdentity,
+  right: EnvironmentRecipeMutationIdentity
+): boolean {
+  return (
+    left.pairedDeviceId === right.pairedDeviceId &&
+    left.method === right.method &&
+    left.clientMutationId === right.clientMutationId
+  )
+}
+
+export function getEnvironmentRecipeOperationJournalPath(userDataPath: string): string {
+  return join(userDataPath, JOURNAL_FILE)
+}

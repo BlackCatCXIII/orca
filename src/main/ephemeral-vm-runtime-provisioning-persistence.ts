@@ -26,7 +26,7 @@ export function prepareEphemeralVmCompatibilityPersistence(
   }
   listEphemeralVmRuntimes(args.userDataPath)
   const compatibility = {
-    instanceId: `orca-${randomUUID()}`,
+    instanceId: args.runtimeId ?? `orca-${randomUUID()}`,
     createdAt: args.now ?? Date.now()
   }
   assertEphemeralVmRuntimeCheckoutModeCanPersist(args.userDataPath, {
@@ -50,6 +50,10 @@ export async function persistProvisionedEphemeralVmRuntime(
       id: start.context.instanceId ?? start.context.recipeId,
       recipeId: args.recipe.id,
       recipe: args.recipe,
+      ...(args.operatorRecipeCatalogSha256
+        ? { operatorRecipeCatalogSha256: args.operatorRecipeCatalogSha256 }
+        : {}),
+      ...(args.provisionMutation ? { provisionMutation: args.provisionMutation } : {}),
       ...(args.repoId ? { repoId: args.repoId } : {}),
       ...(args.projectId ? { projectId: args.projectId } : {}),
       ...(args.workspaceId ? { workspaceId: args.workspaceId } : {}),
@@ -63,19 +67,21 @@ export async function persistProvisionedEphemeralVmRuntime(
       recipeResult: start.result
     })
   } catch (error) {
-    if (compatibility) {
-      const cleaned = await cleanupFailedEphemeralVmStart(args, {
-        context: start.context,
-        recipeResult: start.result
-      })
-      if (
-        cleaned &&
-        listEphemeralVmRuntimes(args.userDataPath).some(
-          (runtime) => runtime.id === compatibility.instanceId
-        )
-      ) {
-        removeEphemeralVmRuntime(args.userDataPath, compatibility.instanceId)
-      }
+    const cleaned = await cleanupFailedEphemeralVmStart(args, {
+      context: start.context,
+      recipeResult: start.result
+    })
+    if (!cleaned) {
+      args.onTerminalProvisionFailure?.()
+    }
+    if (
+      compatibility &&
+      cleaned &&
+      listEphemeralVmRuntimes(args.userDataPath).some(
+        (runtime) => runtime.id === compatibility.instanceId
+      )
+    ) {
+      removeEphemeralVmRuntime(args.userDataPath, compatibility.instanceId)
     }
     throw error
   }

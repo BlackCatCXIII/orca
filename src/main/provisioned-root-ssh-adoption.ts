@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto'
 import type { Store } from './persistence'
 import type { Repo } from '../shared/repo-types'
 import type {
@@ -7,7 +6,12 @@ import type {
 } from '../shared/worktree/create-types'
 import type { WorktreeMeta } from '../shared/worktree/meta-types'
 import type { AutomationWorkspaceProvenance } from '../shared/worktree/types'
-import { isRuntimeOwnedSshTargetId, toSshExecutionHostId } from '../shared/execution-host'
+import {
+  getRepoExecutionHostId,
+  isRuntimeOwnedSshTargetId,
+  toSshExecutionHostId
+} from '../shared/execution-host'
+import { isFolderRepo } from '../shared/repo-kind'
 import { normalizeRuntimePathForComparison } from '../shared/cross-platform-path'
 import {
   getEphemeralVmRecipeResultCheckoutMode,
@@ -15,15 +19,30 @@ import {
 } from '../shared/ephemeral-vm-recipes'
 import { listEphemeralVmRuntimes } from '../shared/ephemeral-vm-runtime-store'
 import type { EphemeralVmRuntimeRecord } from '../shared/ephemeral-vm-runtimes'
-import { getProjectHostSetupWorktreeMeta } from '../shared/project-host-setup-projection'
-import { isTuiAgent } from '../shared/tui-agent-config'
+import { getProjectHostSetupForRepo } from '../shared/project-host-setup-projection'
 import { getSshGitProvider } from './providers/ssh-git-dispatch'
 import {
   getSshProviderAuthority,
   isCurrentSshProviderAuthority
 } from './ssh/ssh-provider-authority'
-import { attachEphemeralVmRuntimeToWorkspace } from './ephemeral-vm-runtime-attachment'
-import { getWorktreeCreationLayout, mergeWorktree } from './ipc/worktree-logic'
+import { attachRunningEphemeralVmRuntimeToWorkspace } from './ephemeral-vm-runtime-attachment'
+import { mergeWorktree } from './ipc/worktree-logic'
+import { buildProvisionedRootMeta } from './provisioned-root-worktree-meta'
+
+export type ProvisionedRootAdoptionStore = Pick<
+  Store,
+  | 'getRepos'
+  | 'getProjects'
+  | 'getWorktreeMeta'
+  | 'setWorktreeMeta'
+  | 'getProjectHostSetups'
+  | 'getSettings'
+>
+
+export type ProvisionedRootAdoptionResult = {
+  result: CreateWorktreeResult
+  created: boolean
+}
 
 type AdoptionArgs = AdoptProvisionedRootArgs & {
   automationProvenance?: AutomationWorkspaceProvenance
@@ -33,9 +52,9 @@ export async function adoptProvisionedRootSshCheckout(args: {
   userDataPath: string
   request: AdoptionArgs
   repo: Repo
-  store: Store
+  store: ProvisionedRootAdoptionStore
   isRepoCurrent: () => boolean
-}): Promise<CreateWorktreeResult> {
+}): Promise<ProvisionedRootAdoptionResult> {
   const { request, repo, store } = args
   if (request.sparseCheckout) {
     throw new Error('Provisioned-root recipes do not support sparse checkout.')
@@ -47,12 +66,14 @@ export async function adoptProvisionedRootSshCheckout(args: {
   if (request.executionHostId !== toSshExecutionHostId(connectionId)) {
     throw new Error('Provisioned-root workspace host does not match its SSH target.')
   }
+  requireUniqueImportedRepo(store, repo, request.executionHostId)
 
   const runtime = requireOwnedProvisionedRootRuntime(
     args.userDataPath,
     request.runtimeId,
     connectionId
   )
+  requireRuntimeAdoptionIdentity(store, repo, runtime, request)
   const projectRoot = getEphemeralVmRecipeResultProjectRoot(runtime.recipeResult)
   if (!pathsEqual(request.expectedPath, projectRoot) || !pathsEqual(repo.path, projectRoot)) {
     throw new Error('The recipe projectRoot does not match the imported Git checkout root.')
@@ -74,7 +95,13 @@ export async function adoptProvisionedRootSshCheckout(args: {
   ) {
     throw new Error('The recipe-created SSH connection changed during checkout verification.')
   }
-  requireOwnedProvisionedRootRuntime(args.userDataPath, request.runtimeId, connectionId)
+  requireUniqueImportedRepo(store, repo, request.executionHostId)
+  const currentRuntime = requireOwnedProvisionedRootRuntime(
+    args.userDataPath,
+    request.runtimeId,
+    connectionId
+  )
+  requireRuntimeAdoptionIdentity(store, repo, currentRuntime, request)
 
   const matches = worktrees.filter((worktree) => pathsEqual(worktree.path, projectRoot))
   if (matches.length !== 1) {
@@ -102,17 +129,103 @@ export async function adoptProvisionedRootSshCheckout(args: {
   }
 
   const worktreeId = `${repo.id}::${gitWorktree.path}`
-  attachEphemeralVmRuntimeToWorkspace({
-    userDataPath: args.userDataPath,
-    runtimeId: request.runtimeId,
-    workspaceId: worktreeId
-  })
+  if (currentRuntime.workspaceId && currentRuntime.workspaceId !== worktreeId) {
+    throw new Error('Provisioned-root runtime is already attached to another workspace.')
+  }
+  requireUniqueRuntimeAttachment(args.userDataPath, currentRuntime.id, worktreeId)
+  const existingMeta = store.getWorktreeMeta(worktreeId)
+  requireCompatibleExistingMeta(existingMeta, request.executionHostId)
+  if (currentRuntime.workspaceId === worktreeId && existingMeta) {
+    return {
+      result: { worktree: mergeWorktree(repo.id, gitWorktree, existingMeta) },
+      created: false
+    }
+  }
+  if (currentRuntime.workspaceId !== worktreeId) {
+    attachRunningEphemeralVmRuntimeToWorkspace({
+      userDataPath: args.userDataPath,
+      runtimeId: request.runtimeId,
+      workspaceId: worktreeId
+    })
+  }
   const now = Date.now()
   const meta = store.setWorktreeMeta(
     worktreeId,
-    buildProvisionedRootMeta(store, repo, request, now)
+    buildProvisionedRootMeta(store, repo, request, now, existingMeta)
   )
-  return { worktree: mergeWorktree(repo.id, gitWorktree, meta) }
+  return {
+    result: { worktree: mergeWorktree(repo.id, gitWorktree, meta) },
+    created: true
+  }
+}
+
+function requireUniqueRuntimeAttachment(
+  userDataPath: string,
+  runtimeId: string,
+  worktreeId: string
+): void {
+  const conflicting = listEphemeralVmRuntimes(userDataPath).find(
+    (runtime) =>
+      runtime.id !== runtimeId && runtime.workspaceId === worktreeId && runtime.status !== 'cleaned'
+  )
+  if (conflicting) {
+    throw new Error('Provisioned-root workspace is already attached to another runtime.')
+  }
+}
+
+function requireRuntimeAdoptionIdentity(
+  store: ProvisionedRootAdoptionStore,
+  repo: Repo,
+  runtime: EphemeralVmRuntimeRecord,
+  request: AdoptionArgs
+): void {
+  if (!runtime.repoId || request.sourceRepoId !== runtime.repoId) {
+    throw new Error('Provisioned-root source repository does not match the runtime identity.')
+  }
+  const setup = getProjectHostSetupForRepo(store.getProjectHostSetups(), repo)
+  const projects = store
+    .getProjects()
+    .filter(
+      (project) =>
+        project.id === setup.projectId && project.sourceRepoIds.includes(request.sourceRepoId)
+    )
+  if (projects.length !== 1) {
+    throw new Error('Provisioned-root source repository does not match the imported repo identity.')
+  }
+}
+
+function requireUniqueImportedRepo(
+  store: ProvisionedRootAdoptionStore,
+  repo: Repo,
+  executionHostId: AdoptionArgs['executionHostId']
+): void {
+  const matches = store
+    .getRepos()
+    .filter(
+      (candidate) =>
+        !isFolderRepo(candidate) &&
+        getRepoExecutionHostId(candidate) === executionHostId &&
+        (candidate.id === repo.id || pathsEqual(candidate.path, repo.path))
+    )
+  if (
+    matches.length !== 1 ||
+    matches[0]?.id !== repo.id ||
+    !pathsEqual(matches[0].path, repo.path)
+  ) {
+    throw new Error('Provisioned-root imported repository identity or path is ambiguous.')
+  }
+}
+
+function requireCompatibleExistingMeta(
+  meta: WorktreeMeta | undefined,
+  executionHostId: AdoptionArgs['executionHostId']
+): void {
+  if (
+    meta &&
+    (meta.hostId !== executionHostId || meta.ephemeralVmCheckoutMode !== 'provisioned-root')
+  ) {
+    throw new Error('Provisioned-root worktree metadata belongs to another workspace.')
+  }
 }
 
 async function isSparseCheckoutEnabled(
@@ -140,7 +253,7 @@ function requireOwnedProvisionedRootRuntime(
     runtime.sshTargetId !== connectionId ||
     runtime.recipe?.checkoutMode !== 'provisioned-root' ||
     getEphemeralVmRecipeResultCheckoutMode(runtime.recipeResult) !== 'provisioned-root' ||
-    ['cleanup_pending', 'cleanup_failed', 'cleaned'].includes(runtime.status)
+    runtime.status !== 'running'
   ) {
     throw new Error('The ephemeral VM runtime does not own this provisioned SSH checkout.')
   }
@@ -149,58 +262,4 @@ function requireOwnedProvisionedRootRuntime(
 
 function pathsEqual(left: string, right: string): boolean {
   return normalizeRuntimePathForComparison(left) === normalizeRuntimePathForComparison(right)
-}
-
-function buildProvisionedRootMeta(
-  store: Store,
-  repo: Repo,
-  args: AdoptionArgs,
-  now: number
-): Partial<WorktreeMeta> {
-  return {
-    instanceId: randomUUID(),
-    ...(store.getProjectHostSetups
-      ? getProjectHostSetupWorktreeMeta(store.getProjectHostSetups(), repo)
-      : {}),
-    hostId: args.executionHostId,
-    ephemeralVmCheckoutMode: 'provisioned-root',
-    displayName: args.displayName || args.name,
-    lastActivityAt: now,
-    createdAt: now,
-    orcaCreatedAt: now,
-    orcaCreationSource: 'ssh',
-    creatorProvenance: { kind: 'host' },
-    orcaCreationWorkspaceLayout: getWorktreeCreationLayout(repo, store.getSettings()),
-    ...(args.automationProvenance ? { automationProvenance: args.automationProvenance } : {}),
-    ...(args.compareBaseRef || args.baseBranch
-      ? { baseRef: args.compareBaseRef ?? args.baseBranch }
-      : {}),
-    ...(args.pushTarget ? { pushTarget: args.pushTarget } : {}),
-    ...(isTuiAgent(args.createdWithAgent) ? { createdWithAgent: args.createdWithAgent } : {}),
-    ...(args.pendingFirstAgentMessageRename === true && isTuiAgent(args.createdWithAgent)
-      ? { pendingFirstAgentMessageRename: true }
-      : {}),
-    ...(args.linkedIssue !== undefined ? { linkedIssue: args.linkedIssue } : {}),
-    ...(args.linkedPR !== undefined ? { linkedPR: args.linkedPR } : {}),
-    ...(args.linkedLinearIssue !== undefined ? { linkedLinearIssue: args.linkedLinearIssue } : {}),
-    ...(args.linkedLinearIssueWorkspaceId !== undefined
-      ? { linkedLinearIssueWorkspaceId: args.linkedLinearIssueWorkspaceId }
-      : {}),
-    ...(args.linkedLinearIssueOrganizationUrlKey !== undefined
-      ? { linkedLinearIssueOrganizationUrlKey: args.linkedLinearIssueOrganizationUrlKey }
-      : {}),
-    ...(args.manualOrder !== undefined ? { manualOrder: args.manualOrder } : {}),
-    ...(args.workspaceStatus !== undefined ? { workspaceStatus: args.workspaceStatus } : {}),
-    ...(args.linkedGitLabIssue !== undefined ? { linkedGitLabIssue: args.linkedGitLabIssue } : {}),
-    ...(args.linkedGitLabMR !== undefined ? { linkedGitLabMR: args.linkedGitLabMR } : {}),
-    ...(args.linkedBitbucketPR !== undefined ? { linkedBitbucketPR: args.linkedBitbucketPR } : {}),
-    ...(args.linkedAzureDevOpsPR !== undefined
-      ? { linkedAzureDevOpsPR: args.linkedAzureDevOpsPR }
-      : {}),
-    ...(args.linkedGiteaPR !== undefined ? { linkedGiteaPR: args.linkedGiteaPR } : {}),
-    ...(args.linkedWorkItem !== undefined ? { linkedWorkItem: args.linkedWorkItem } : {}),
-    ...(args.linkedTaskSourceContext !== undefined
-      ? { linkedTaskSourceContext: args.linkedTaskSourceContext }
-      : {})
-  }
 }

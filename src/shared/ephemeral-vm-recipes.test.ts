@@ -19,6 +19,19 @@ function makePairingCode(endpoint = 'wss://sandbox.example.com'): string {
   })
 }
 
+const TEST_HOST_FINGERPRINT = `SHA256:${'A'.repeat(43)}`
+
+function makePublicHostKey(algorithm = 'ssh-ed25519'): string {
+  const name = Buffer.from(algorithm)
+  const payload = Buffer.alloc(32, 7)
+  const encode = (value: Buffer): Buffer => {
+    const length = Buffer.alloc(4)
+    length.writeUInt32BE(value.length)
+    return Buffer.concat([length, value])
+  }
+  return `${algorithm} ${Buffer.concat([encode(name), encode(payload)]).toString('base64')}`
+}
+
 describe('parseEphemeralVmRecipeResult', () => {
   it('parses the minimum recipe result', () => {
     const result = parseEphemeralVmRecipeResult(
@@ -139,7 +152,8 @@ describe('parseEphemeralVmRecipeResult', () => {
             label: 'Sandbox',
             host: 'sandbox.example.com',
             port: 22,
-            username: 'root'
+            username: 'root',
+            hostKey: { type: 'sha256', fingerprint: TEST_HOST_FINGERPRINT }
           }
         }
       })
@@ -157,10 +171,68 @@ describe('parseEphemeralVmRecipeResult', () => {
             label: 'Sandbox',
             host: 'sandbox.example.com',
             port: 22,
-            username: 'root'
+            username: 'root',
+            hostKey: { type: 'sha256', fingerprint: TEST_HOST_FINGERPRINT }
           }
         }
       }
+    })
+  })
+
+  it('requires a host key pin for provisioned-root SSH only', () => {
+    const provisionedRoot = {
+      schemaVersion: 2,
+      checkoutMode: 'provisioned-root',
+      connection: {
+        type: 'ssh',
+        projectRoot: '/workspace/repo',
+        target: {
+          label: 'Sandbox',
+          host: 'sandbox.example.com',
+          port: 22,
+          username: 'root'
+        }
+      }
+    }
+
+    expect(parseEphemeralVmRecipeResult(JSON.stringify(provisionedRoot))).toMatchObject({
+      ok: false
+    })
+    expect(
+      parseEphemeralVmRecipeResult(
+        JSON.stringify({ ...provisionedRoot, schemaVersion: 1, checkoutMode: undefined })
+      )
+    ).toMatchObject({ ok: true })
+  })
+
+  it('accepts exact OpenSSH public keys and rejects malformed pin algorithms', () => {
+    const result = (hostKey: unknown) =>
+      parseEphemeralVmRecipeResult(
+        JSON.stringify({
+          schemaVersion: 2,
+          checkoutMode: 'provisioned-root',
+          connection: {
+            type: 'ssh',
+            projectRoot: '/workspace/repo',
+            target: {
+              label: 'Sandbox',
+              host: 'sandbox.example.com',
+              port: 22,
+              username: 'root',
+              hostKey
+            }
+          }
+        })
+      )
+
+    expect(result({ type: 'public-key', publicKey: makePublicHostKey() })).toMatchObject({
+      ok: true
+    })
+    expect(
+      result({ type: 'public-key', publicKey: `ssh-rsa ${makePublicHostKey().split(' ')[1]}` })
+    ).toMatchObject({ ok: false })
+    expect(result({ type: 'sha256', fingerprint: 'SHA256:not-an-openssh-digest' })).toMatchObject({
+      ok: false
     })
   })
 
@@ -279,11 +351,13 @@ describe('parseEphemeralVmRecipeResult', () => {
           token: 'provider-token',
           identityFile: '/secret/key',
           proxyCommand: 'provider token',
+          fingerprint: TEST_HOST_FINGERPRINT,
+          publicKey: makePublicHostKey(),
           ok: true
         })
       )
     ).toBe(
-      '{"pairingCode":"[redacted]","token":"[redacted]","identityFile":"[redacted]","proxyCommand":"[redacted]","ok":true}'
+      '{"pairingCode":"[redacted]","token":"[redacted]","identityFile":"[redacted]","proxyCommand":"[redacted]","fingerprint":"[redacted]","publicKey":"[redacted]","ok":true}'
     )
     expect(
       redactEphemeralVmRecipeDiagnosticText(
@@ -324,7 +398,8 @@ describe('parseEphemeralVmRecipeResult', () => {
             username: 'root',
             identityFile: '/secret/key',
             identityAgent: '/secret/agent.sock',
-            proxyCommand: 'provider ssh-proxy sandbox-123'
+            proxyCommand: 'provider ssh-proxy sandbox-123',
+            hostKey: { type: 'sha256', fingerprint: TEST_HOST_FINGERPRINT }
           }
         }
       })
@@ -340,7 +415,8 @@ describe('parseEphemeralVmRecipeResult', () => {
           username: 'root',
           identityFile: '[redacted-path]',
           identityAgent: '[redacted-path]',
-          proxyCommand: '[redacted]'
+          proxyCommand: '[redacted]',
+          hostKey: { type: 'sha256', fingerprint: '[redacted]' }
         }
       }
     })

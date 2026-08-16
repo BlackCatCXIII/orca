@@ -1,0 +1,78 @@
+name: Daily upstream sync readiness
+
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-upstream-sync-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  readiness:
+    name: simulate official main merge
+    runs-on: orca-source-ci
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout exact downstream commit without credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          token: ''
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 10.24.0
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: package.json
+          package-manager-cache: false
+
+      - name: Install script-free dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Verify sync tool and workflow contracts
+        run: >-
+          pnpm exec vitest run --config config/vitest.config.ts
+          config/scripts/upstream-sync-report.test.mjs
+          config/scripts/upstream-sync-workflow.test.mjs
+
+      - name: Simulate merge from official main
+        id: simulation
+        continue-on-error: true
+        run: >-
+          node config/scripts/upstream-sync-report.mjs
+          --repo .
+          --downstream-ref "${{ github.sha }}"
+          --downstream-url "${{ github.server_url }}/${{ github.repository }}.git"
+          --expected-downstream-sha "${{ github.sha }}"
+          --upstream-ref refs/heads/main
+          --upstream-url https://github.com/stablyai/orca.git
+          --json artifacts/upstream-sync/report.json
+          --markdown artifacts/upstream-sync/report.md
+
+      - name: Retain immutable readiness report in MinIO
+        if: always()
+        run: >-
+          node config/scripts/minio-artifact-retention.mjs
+          --prefix upstream-sync-readiness
+          --source-sha "${{ github.sha }}"
+          --workflow-file .github/workflows/daily-upstream-sync.yml
+          --run-id "${{ github.run_id }}"
+          --run-attempt "${{ github.run_attempt }}"
+          --directory artifacts/upstream-sync
+
+      - name: Fail after preserving a non-mergeable report
+        if: always() && steps.simulation.outcome != 'success'
+        run: exit 1

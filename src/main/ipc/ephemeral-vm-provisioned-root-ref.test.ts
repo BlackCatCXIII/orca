@@ -177,7 +177,7 @@ function writeRecipe(path: string, createCountPath: string, createEnvPath?: stri
         : []),
       'console.log(JSON.stringify({schemaVersion:2,checkoutMode:"provisioned-root",',
       'connection:{type:"ssh",projectRoot:"/workspace/repo",',
-      'target:{label:"Sandbox",host:"host",port:22,username:"root"}}}))'
+      `target:{label:"Sandbox",host:"host",port:22,username:"root",hostKey:{type:"sha256",fingerprint:"SHA256:${'A'.repeat(43)}"}}}}))`
     ].join('\n')
   )
   writeFileSync(

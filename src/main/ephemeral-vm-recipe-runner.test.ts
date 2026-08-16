@@ -180,6 +180,31 @@ describe('runEphemeralVmRecipeStart', () => {
     })
   })
 
+  it('rejects a provisioned-root SSH result before runtime creation when its host pin is missing', async () => {
+    const repoPath = makeRepo()
+    const scriptPath = join(repoPath, 'start.js')
+    writeFileSync(
+      scriptPath,
+      `console.log(JSON.stringify({schemaVersion:2,checkoutMode:'provisioned-root',connection:{type:'ssh',projectRoot:'/workspace/repo',target:{label:'VM',host:'host',port:22,username:'orca'}}}))\n`
+    )
+
+    const result = await runEphemeralVmRecipeStart({
+      repoPath,
+      recipe: {
+        id: 'cloud-sandbox',
+        name: 'Cloud Sandbox',
+        checkoutMode: 'provisioned-root',
+        create: nodeCommand(scriptPath)
+      }
+    })
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: 'Provisioned-root SSH recipe results must include target.hostKey.',
+      exitCode: 0
+    })
+  })
+
   it('returns a process failure when the recipe exits nonzero', async () => {
     const repoPath = makeRepo()
     const scriptPath = join(repoPath, 'start.js')

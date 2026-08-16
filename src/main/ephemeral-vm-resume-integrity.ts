@@ -5,6 +5,7 @@ import {
   getEphemeralVmRecipeResultProjectRoot,
   type EphemeralVmRecipeResult
 } from '../shared/ephemeral-vm-recipes'
+import type { SshHostKeyPin } from '../shared/ssh-host-key-pin'
 
 export function getProvisionedRootResumeIntegrityError(
   previous: EphemeralVmRecipeResult,
@@ -54,5 +55,25 @@ function sshOwnershipChanged(
     { type: 'ssh' }
   >['target']
 ): boolean {
-  return SSH_OWNERSHIP_FIELDS.some((field) => previous[field] !== resumed[field])
+  if (SSH_OWNERSHIP_FIELDS.some((field) => previous[field] !== resumed[field])) {
+    return true
+  }
+  return sshHostKeyChanged(previous.hostKey, resumed.hostKey)
+}
+
+function sshHostKeyChanged(
+  previous: SshHostKeyPin | undefined,
+  resumed: SshHostKeyPin | undefined
+): boolean {
+  if (!previous || !resumed) {
+    return previous !== resumed
+  }
+  if (previous.type !== resumed.type) {
+    return true
+  }
+  return previous.type === 'sha256' && resumed.type === 'sha256'
+    ? previous.fingerprint !== resumed.fingerprint
+    : previous.type === 'public-key' && resumed.type === 'public-key'
+      ? previous.publicKey !== resumed.publicKey
+      : true
 }

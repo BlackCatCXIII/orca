@@ -23,26 +23,30 @@ export async function cleanupFailedEphemeralVmStart(
   start: FailedStart
 ): Promise<boolean> {
   const cleanupError = await getCleanupError(args, start)
-  if (cleanupError === null) {
+  if (cleanupError === null && !args.provisionMutation) {
     return true
   }
-
   const now = args.now ?? Date.now()
   const connection = getEphemeralVmRecipeResultConnection(start.recipeResult)
   const recovery: EphemeralVmRuntimeRecord = {
     id: start.context.instanceId ?? start.context.recipeId,
     recipeId: args.recipe.id,
     recipe: args.recipe,
+    ...(args.operatorRecipeCatalogSha256
+      ? { operatorRecipeCatalogSha256: args.operatorRecipeCatalogSha256 }
+      : {}),
+    ...(args.provisionMutation ? { provisionMutation: args.provisionMutation } : {}),
     ...(args.repoId ? { repoId: args.repoId } : {}),
     ...(args.projectId ? { projectId: args.projectId } : {}),
     ...(args.workspaceId ? { workspaceId: args.workspaceId } : {}),
     ...(args.workspaceName ? { workspaceName: args.workspaceName } : {}),
-    status: 'cleanup_failed',
+    status: cleanupError === null ? 'cleaned' : 'cleanup_failed',
     connectionMode: connection.type,
-    cleanupStatus: args.recipe.destroyDisabled ? 'disabled' : 'failed',
+    cleanupStatus:
+      cleanupError === null ? 'succeeded' : args.recipe.destroyDisabled ? 'disabled' : 'failed',
     ...(args.recipe.destroyDisabled ? { cleanupDisabled: true } : {}),
     cleanupLastAttemptAt: now,
-    cleanupLastError: cleanupError,
+    ...(cleanupError ? { cleanupLastError: cleanupError } : {}),
     createdAt: now,
     updatedAt: now,
     recipeResult: start.recipeResult
@@ -67,6 +71,7 @@ async function getCleanupError(
     const cleanup = await runEphemeralVmRecipeCleanup({
       repoPath: args.repoPath,
       recipe: args.recipe,
+      executionMode: args.executionMode,
       context: start.context,
       recipeResult: start.recipeResult,
       signal: args.signal,

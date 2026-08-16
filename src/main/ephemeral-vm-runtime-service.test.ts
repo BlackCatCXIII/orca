@@ -16,7 +16,8 @@ import {
   cleanupEphemeralVmRuntime,
   provisionEphemeralVmRuntime,
   resumeEphemeralVmRuntime,
-  stopEphemeralVmRuntimeCleanup
+  stopEphemeralVmRuntimeCleanup,
+  suspendEphemeralVmRuntime
 } from './ephemeral-vm-runtime-service'
 import type { OrcaVmRecipe } from '../shared/orca-yaml-hook-types'
 
@@ -46,6 +47,8 @@ function makePairingCode(): string {
 function nodeCommand(scriptPath: string): string {
   return `"${process.execPath}" "${scriptPath}"`
 }
+
+const TEST_HOST_FINGERPRINT = `SHA256:${'A'.repeat(43)}`
 
 describe('ephemeral VM runtime service', () => {
   const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')
@@ -108,6 +111,10 @@ describe('ephemeral VM runtime service', () => {
       repoId: 'repo-1',
       projectId: 'project-1',
       workspaceName: 'Fix Login Race',
+      provisionMutation: {
+        requestSha256: 'f'.repeat(64),
+        resolvedRef: 'a'.repeat(40)
+      },
       now: 1_000
     })
 
@@ -122,6 +129,10 @@ describe('ephemeral VM runtime service', () => {
       repoId: 'repo-1',
       projectId: 'project-1',
       workspaceName: 'Fix Login Race',
+      provisionMutation: {
+        requestSha256: 'f'.repeat(64),
+        resolvedRef: 'a'.repeat(40)
+      },
       status: 'running',
       cleanupStatus: 'not_started',
       createdAt: 1_000,
@@ -242,6 +253,126 @@ describe('ephemeral VM runtime service', () => {
     expect(listEphemeralVmRuntimes(userDataPath)).toEqual([])
   })
 
+  it('requires exact operator identity and direct mode for every stored lifecycle', async () => {
+    const userDataPath = makeDir('orca-operator-runtime-authority-')
+    const recipe: OrcaVmRecipe = {
+      id: 'operator-box',
+      name: 'Operator box',
+      create: '/operator/create',
+      destroyDisabled: true
+    }
+    upsertEphemeralVmRuntime(userDataPath, {
+      id: 'operator-runtime',
+      recipeId: recipe.id,
+      recipe,
+      operatorRecipeCatalogSha256: 'a'.repeat(64),
+      status: 'suspended',
+      cleanupStatus: 'disabled',
+      cleanupDisabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+      recipeResult: {
+        schemaVersion: 1,
+        pairingCode: makePairingCode(),
+        projectRoot: '/workspace/repo'
+      }
+    })
+    const args = {
+      userDataPath,
+      repoPath: makeDir('orca-operator-target-repo-'),
+      recipe,
+      runtimeId: 'operator-runtime'
+    }
+
+    await expect(cleanupEphemeralVmRuntime(args)).rejects.toThrow(/unavailable/)
+    await expect(suspendEphemeralVmRuntime(args)).rejects.toThrow(/unavailable/)
+    await expect(
+      resumeEphemeralVmRuntime({
+        ...args,
+        executionMode: 'direct',
+        operatorRecipeCatalogSha256: 'b'.repeat(64)
+      })
+    ).rejects.toThrow(/unavailable/)
+    await expect(
+      cleanupEphemeralVmRuntime({
+        ...args,
+        executionMode: 'direct',
+        operatorRecipeCatalogSha256: 'a'.repeat(64)
+      })
+    ).resolves.toMatchObject({ ok: true, skipped: true })
+  })
+
+  it('destroys a provisioned resource but stays uncertain when no tombstone can persist', async () => {
+    const repoPath = makeDir('orca-ephemeral-vm-service-repo-')
+    const userDataPath = join(repoPath, 'not-a-directory')
+    const startPath = join(repoPath, 'start.js')
+    const cleanupPath = join(repoPath, 'cleanup.js')
+    writeFileSync(userDataPath, 'file')
+    writeFileSync(
+      startPath,
+      `console.log(${JSON.stringify(
+        JSON.stringify({
+          schemaVersion: 1,
+          pairingCode: makePairingCode(),
+          projectRoot: '/workspace/repo'
+        })
+      )})`
+    )
+    writeFileSync(cleanupPath, "require('fs').writeFileSync('cleanup-ran.txt', 'yes')")
+    const onTerminalProvisionFailure = vi.fn()
+
+    await expect(
+      provisionEphemeralVmRuntime({
+        userDataPath,
+        repoPath,
+        recipe: {
+          id: 'cloud-sandbox',
+          name: 'Cloud Sandbox',
+          create: nodeCommand(startPath),
+          destroy: nodeCommand(cleanupPath)
+        },
+        onTerminalProvisionFailure
+      })
+    ).rejects.toThrow()
+    expect(onTerminalProvisionFailure).not.toHaveBeenCalled()
+    expect(readFileSync(join(repoPath, 'cleanup-ran.txt'), 'utf8')).toBe('yes')
+  })
+
+  it('keeps runtime-record failures uncertain when cleanup is not confirmed', async () => {
+    const repoPath = makeDir('orca-ephemeral-vm-service-repo-')
+    const userDataPath = join(repoPath, 'not-a-directory')
+    const startPath = join(repoPath, 'start.js')
+    const cleanupPath = join(repoPath, 'cleanup.js')
+    writeFileSync(userDataPath, 'file')
+    writeFileSync(
+      startPath,
+      `console.log(${JSON.stringify(
+        JSON.stringify({
+          schemaVersion: 1,
+          pairingCode: makePairingCode(),
+          projectRoot: '/workspace/repo'
+        })
+      )})`
+    )
+    writeFileSync(cleanupPath, 'process.exit(1)')
+    const onTerminalProvisionFailure = vi.fn()
+
+    await expect(
+      provisionEphemeralVmRuntime({
+        userDataPath,
+        repoPath,
+        recipe: {
+          id: 'cloud-sandbox',
+          name: 'Cloud Sandbox',
+          create: nodeCommand(startPath),
+          destroy: nodeCommand(cleanupPath)
+        },
+        onTerminalProvisionFailure
+      })
+    ).rejects.toThrow()
+    expect(onTerminalProvisionFailure).not.toHaveBeenCalled()
+  })
+
   it('rejects an unwritable feature store before a checkout-mode recipe creates resources', async () => {
     const userDataPath = makeDir('orca-ephemeral-vm-service-user-data-')
     const repoPath = makeDir('orca-ephemeral-vm-service-repo-')
@@ -309,7 +440,7 @@ describe('ephemeral VM runtime service', () => {
         '  connection: {',
         '    type: "ssh",',
         '    projectRoot: "/workspace/repo",',
-        '    target: { label: "VM", host: "host", port: 22, username: "orca" }',
+        `    target: { label: "VM", host: "host", port: 22, username: "orca", hostKey: { type: "sha256", fingerprint: ${JSON.stringify(TEST_HOST_FINGERPRINT)} } }`,
         '  }',
         '}))'
       ].join('\n')
@@ -352,7 +483,7 @@ describe('ephemeral VM runtime service', () => {
         '  connection: {',
         '    type: "ssh",',
         '    projectRoot: "/workspace/repo",',
-        '    target: { label: "VM", host: "host", port: 22, username: "orca" }',
+        `    target: { label: "VM", host: "host", port: 22, username: "orca", hostKey: { type: "sha256", fingerprint: ${JSON.stringify(TEST_HOST_FINGERPRINT)} } }`,
         '  },',
         '  userData: { providerResourceId: "paid-vm" }',
         '}))'
@@ -403,6 +534,13 @@ describe('ephemeral VM runtime service', () => {
       )})`
     )
     writeFileSync(cleanupPath, "require('fs').writeFileSync('cleanup-ran.txt', 'yes')")
+    const provisionMutation = {
+      requestSha256: 'f'.repeat(64),
+      resolvedRef: 'a'.repeat(40)
+    }
+    const onTerminalProvisionFailure = vi.fn(() => {
+      expect(readFileSync(join(repoPath, 'cleanup-ran.txt'), 'utf8')).toBe('yes')
+    })
 
     const provisioned = await provisionEphemeralVmRuntime({
       userDataPath,
@@ -413,7 +551,10 @@ describe('ephemeral VM runtime service', () => {
         checkoutMode: 'provisioned-root',
         create: nodeCommand(startPath),
         destroy: nodeCommand(cleanupPath)
-      }
+      },
+      operatorRecipeCatalogSha256: 'c'.repeat(64),
+      provisionMutation,
+      onTerminalProvisionFailure
     })
 
     expect(provisioned).toMatchObject({
@@ -423,8 +564,16 @@ describe('ephemeral VM runtime service', () => {
           'Provisioned-root recipes must return schemaVersion 2 with checkoutMode "provisioned-root".'
       }
     })
+    expect(onTerminalProvisionFailure).toHaveBeenCalledOnce()
     expect(readFileSync(join(repoPath, 'cleanup-ran.txt'), 'utf8')).toBe('yes')
-    expect(listEphemeralVmRuntimes(userDataPath)).toEqual([])
+    expect(listEphemeralVmRuntimes(userDataPath)).toEqual([
+      expect.objectContaining({
+        operatorRecipeCatalogSha256: 'c'.repeat(64),
+        provisionMutation,
+        status: 'cleaned',
+        cleanupStatus: 'succeeded'
+      })
+    ])
   })
 
   it('persists failed cleanup after an incompatible checkout handshake', async () => {
@@ -450,6 +599,11 @@ describe('ephemeral VM runtime service', () => {
       create: nodeCommand(startPath),
       destroy: nodeCommand(cleanupPath)
     }
+    const onTerminalProvisionFailure = vi.fn(() => {
+      expect(listEphemeralVmRuntimes(userDataPath)[0]).toMatchObject({
+        status: 'cleanup_failed'
+      })
+    })
 
     const provisioned = await provisionEphemeralVmRuntime({
       userDataPath,
@@ -457,10 +611,12 @@ describe('ephemeral VM runtime service', () => {
       recipe,
       repoId: 'repo-1',
       workspaceName: 'Fix Login Race',
+      onTerminalProvisionFailure,
       now: 1_000
     })
 
     expect(provisioned.ok).toBe(false)
+    expect(onTerminalProvisionFailure).toHaveBeenCalledOnce()
     expect(listEphemeralVmRuntimes(userDataPath)).toEqual([
       expect.objectContaining({
         recipe,
@@ -524,7 +680,7 @@ describe('ephemeral VM runtime service', () => {
         '  connection: {',
         '    type: "ssh",',
         '    projectRoot: "/workspace/moved",',
-        '    target: { label: "VM", host: "host", port: 22, username: "orca" }',
+        `    target: { label: "VM", host: "host", port: 22, username: "orca", hostKey: { type: "sha256", fingerprint: ${JSON.stringify(TEST_HOST_FINGERPRINT)} } }`,
         '  }',
         '}))'
       ].join('\n')
@@ -553,7 +709,13 @@ describe('ephemeral VM runtime service', () => {
         connection: {
           type: 'ssh',
           projectRoot: '/workspace/original',
-          target: { label: 'VM', host: 'host', port: 22, username: 'orca' }
+          target: {
+            label: 'VM',
+            host: 'host',
+            port: 22,
+            username: 'orca',
+            hostKey: { type: 'sha256', fingerprint: TEST_HOST_FINGERPRINT }
+          }
         }
       }
     })
@@ -617,7 +779,13 @@ describe('ephemeral VM runtime service', () => {
         connection: {
           type: 'ssh',
           projectRoot: '/workspace/original',
-          target: { label: 'VM', host: 'host', port: 22, username: 'orca' }
+          target: {
+            label: 'VM',
+            host: 'host',
+            port: 22,
+            username: 'orca',
+            hostKey: { type: 'sha256', fingerprint: TEST_HOST_FINGERPRINT }
+          }
         }
       }
     })

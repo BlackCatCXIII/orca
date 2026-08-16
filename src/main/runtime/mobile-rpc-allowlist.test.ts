@@ -36,7 +36,13 @@ const MOBILE_DYNAMIC_RPC_METHODS = [
   'github.resolveReviewThread',
   'github.project.updateIssueCommentBySlug',
   'github.project.deleteIssueCommentBySlug',
-  'hostedReview.forBranch'
+  'hostedReview.forBranch',
+  'environmentRecipes.list',
+  'environmentRecipes.listRuntimes',
+  'environmentRecipes.provision',
+  'environmentRecipes.suspend',
+  'environmentRecipes.resume',
+  'environmentRecipes.destroy'
 ]
 
 const MOBILE_STREAMING_CLEANUP_RPC_METHODS = [
