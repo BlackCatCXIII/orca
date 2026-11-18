@@ -1,3 +1,6 @@
+> Historical: the Selini candidate/readiness workflows and their dedicated
+> runner lint labels were retired on 2026-11-18; Actions is disabled for this fork.
+
 # Candidate artifacts
 
 `Candidate Artifacts` is a manual, non-publishing build of source commit
